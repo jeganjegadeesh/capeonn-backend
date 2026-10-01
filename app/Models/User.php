@@ -17,6 +17,11 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
+    protected $attributes = [
+        'is_active' => true,
+        'is_attendance_applicable' => true,
+    ];
+
     /**
      * Only ever fill these from validated request data, never from $request->all().
      *
@@ -35,7 +40,18 @@ class User extends Authenticatable
         'employee_code',
         'joined_on',
         'is_active',
+        'is_attendance_applicable',
+        'salary',
         'last_login_at',
+        'dob',
+        'gender',
+        'address',
+        'emergency_contact_name',
+        'emergency_contact_phone',
+        'employment_type',
+        'probation_end_date',
+        'skills',
+        'certifications',
     ];
 
     /**
@@ -56,7 +72,13 @@ class User extends Authenticatable
             'password' => 'hashed',
             'joined_on' => 'date',
             'is_active' => 'boolean',
+            'is_attendance_applicable' => 'boolean',
+            'salary' => 'decimal:2',
             'last_login_at' => 'datetime',
+            'dob' => 'date',
+            'probation_end_date' => 'date',
+            'skills' => 'array',
+            'certifications' => 'array',
         ];
     }
 
@@ -97,6 +119,36 @@ class User extends Authenticatable
         return $this->hasMany(User::class, 'reports_to_id');
     }
 
+    public function documents(): HasMany
+    {
+        return $this->hasMany(EmployeeDocument::class);
+    }
+
+    public function histories(): HasMany
+    {
+        return $this->hasMany(EmployeeHistory::class)->orderByDesc('effective_date')->orderByDesc('id');
+    }
+
+    public function attendances(): HasMany
+    {
+        return $this->hasMany(Attendance::class)->orderByDesc('date');
+    }
+
+    public function attendanceRegularizations(): HasMany
+    {
+        return $this->hasMany(AttendanceRegularization::class)->orderByDesc('created_at');
+    }
+
+    public function leaveRequests(): HasMany
+    {
+        return $this->hasMany(LeaveRequest::class)->orderByDesc('start_date');
+    }
+
+    public function leaveBalances(): HasMany
+    {
+        return $this->hasMany(LeaveBalance::class);
+    }
+
     /**
      * The user's permissions as [slug => scope], e.g. ['employees.view' => 'department'].
      * Load `role.permissions` first to avoid extra queries.
@@ -128,5 +180,15 @@ class User extends Authenticatable
     public function hasRole(string ...$slugs): bool
     {
         return $this->role !== null && in_array($this->role->slug, $slugs, true);
+    }
+
+    public function isSuperAdmin(): bool
+    {
+        return $this->hasRole(Role::SUPER_ADMIN, 'admin');
+    }
+
+    public function isHR(): bool
+    {
+        return $this->hasRole(Role::HR);
     }
 }

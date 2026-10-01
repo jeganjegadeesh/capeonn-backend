@@ -370,7 +370,7 @@ class EmployeeTest extends OrganizationTestCase
     {
         $this->as($this->makeUser(Role::ADMIN));
         $res = $this->getJson('/api/v1/roles')->assertOk();
-        $this->assertCount(4, $res->json('data'));
+        $this->assertCount(6, $res->json('data'));
 
         $this->as($this->person(Role::MANAGER));
         $res = $this->getJson('/api/v1/roles')->assertOk();

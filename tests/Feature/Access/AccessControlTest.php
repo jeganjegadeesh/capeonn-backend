@@ -187,7 +187,7 @@ class AccessControlTest extends TestCase
     {
         $slugs = fn (User $u) => $this->access->assignableRoles($u)->pluck('slug')->all();
 
-        $this->assertSame(['admin', 'manager', 'team_lead', 'employee'], $slugs($this->admin));
+        $this->assertSame(['super_admin', 'admin', 'hr', 'manager', 'team_lead', 'employee'], $slugs($this->admin));
         $this->assertSame(['team_lead', 'employee'], $slugs($this->managerA));
         $this->assertSame(['employee'], $slugs($this->tlA));
         $this->assertSame([], $slugs($this->empA1));

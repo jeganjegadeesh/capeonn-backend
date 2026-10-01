@@ -27,18 +27,20 @@ class CompanyAdminSeeder extends Seeder
             ['name' => config('capeonn.company.name')],
         );
 
-        $adminRole = Role::where('slug', Role::ADMIN)->firstOrFail();
+        $adminRole = Role::where('slug', Role::SUPER_ADMIN)->first()
+            ?? Role::where('slug', 'admin')->firstOrFail();
 
         User::firstOrCreate(
             ['email' => config('capeonn.admin.email')],
             [
-                'name'          => config('capeonn.admin.name'),
-                'password'      => $password,
-                'company_id'    => $company->id,
-                'role_id'       => $adminRole->id,
-                'employee_code' => $company->code.'-0001',
-                'joined_on'     => now()->toDateString(),
-                'is_active'     => true,
+                'name'                     => config('capeonn.admin.name'),
+                'password'                 => $password,
+                'company_id'               => $company->id,
+                'role_id'                  => $adminRole->id,
+                'employee_code'            => $company->code.'-0001',
+                'joined_on'                => now()->toDateString(),
+                'is_active'                => true,
+                'is_attendance_applicable' => false,
             ],
         );
     }

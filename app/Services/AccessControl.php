@@ -59,6 +59,33 @@ class AccessControl
         };
     }
 
+    /** Limit any query having a user_id column according to the actor's permission scope. */
+    public function constrainByUserId(Builder $query, User $actor, string $permission, string $userColumn = 'user_id'): Builder
+    {
+        $scope = $actor->scopeFor($permission);
+
+        if ($scope === null || $actor->company_id === null) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $table = $query->getModel()->getTable();
+        $query->where("{$table}.company_id", $actor->company_id);
+
+        $qualifiedUserCol = str_contains($userColumn, '.') ? $userColumn : "{$table}.{$userColumn}";
+
+        return match ($scope) {
+            Permission::SCOPE_ALL        => $query,
+            Permission::SCOPE_DEPARTMENT => $actor->department_id === null
+                ? $query->whereRaw('1 = 0')
+                : $query->whereIn($qualifiedUserCol, function ($sub) use ($actor) {
+                    $sub->select('id')->from('users')->where('department_id', $actor->department_id)->whereNull('deleted_at');
+                }),
+            Permission::SCOPE_TEAM       => $query->whereIn($qualifiedUserCol, $this->subordinateIds($actor)),
+            Permission::SCOPE_SELF       => $query->where($qualifiedUserCol, $actor->id),
+            default                      => $query->whereRaw('1 = 0'),
+        };
+    }
+
     /** Single-record version of constrainUsers(). */
     public function canAccessUser(User $actor, User $target, string $permission): bool
     {
@@ -91,13 +118,13 @@ class AccessControl
             return false;
         }
 
-        return $actor->hasRole(Role::ADMIN) || $this->roleLevel($target) < $this->roleLevel($actor);
+        return $actor->hasRole(Role::SUPER_ADMIN, 'admin') || $this->roleLevel($target) < $this->roleLevel($actor);
     }
 
-    /** Roles $actor may give to someone else: Admin any role, everyone else only lower roles. */
+    /** Roles $actor may give to someone else: Super Admin any role, everyone else only lower roles. */
     public function assignableRoles(User $actor): Collection
     {
-        if ($actor->hasRole(Role::ADMIN)) {
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
             return Role::orderByDesc('level')->get();
         }
 

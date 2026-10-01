@@ -75,17 +75,73 @@ class EmployeeController extends Controller
 
         $user = User::create($data)->load(self::WITH);
 
+        // System-written history: Initial hire
+        \App\Models\EmployeeHistory::create([
+            'user_id'         => $user->id,
+            'company_id'      => $company->id,
+            'event_type'      => 'joined',
+            'title'           => 'Joined Company',
+            'description'     => 'Employee account onboarded by ' . $request->user()->name,
+            'effective_date'  => $user->joined_on ? $user->joined_on->toDateString() : now()->toDateString(),
+            'performed_by_id' => $request->user()->id,
+        ]);
+
         return $this->success((new UserResource($user))->resolve(), 'Employee created', 201);
     }
 
     public function update(EmployeeRequest $request, int $employee): JsonResponse
     {
+        $actor  = $request->user();
         $target = $request->target();
-        $target->update($request->validated());
+        $data   = $request->validated();
+
+        // Salary, joining date and designation editable by HR/Super Admin only
+        if (! $actor->isHR() && ! $actor->isSuperAdmin()) {
+            unset($data['salary'], $data['joined_on'], $data['designation_id']);
+        }
+
+        $target->update($data);
 
         // Deactivated? Sign them out everywhere right away.
         if ($target->wasChanged('is_active') && ! $target->is_active) {
             $target->tokens()->delete();
+        }
+
+        // System-written history logging
+        if ($target->wasChanged('department_id') && $target->department) {
+            \App\Models\EmployeeHistory::create([
+                'user_id'         => $target->id,
+                'company_id'      => $actor->company_id,
+                'event_type'      => 'department_transfer',
+                'title'           => 'Transferred to ' . $target->department->name . ' Department',
+                'description'     => 'Department updated by ' . $actor->name,
+                'effective_date'  => now()->toDateString(),
+                'performed_by_id' => $actor->id,
+            ]);
+        }
+
+        if ($target->wasChanged('designation_id') && $target->designation) {
+            \App\Models\EmployeeHistory::create([
+                'user_id'         => $target->id,
+                'company_id'      => $actor->company_id,
+                'event_type'      => 'designation_change',
+                'title'           => 'Designation changed to ' . $target->designation->name,
+                'description'     => 'Designation updated by ' . $actor->name,
+                'effective_date'  => now()->toDateString(),
+                'performed_by_id' => $actor->id,
+            ]);
+        }
+
+        if ($target->wasChanged('is_active')) {
+            \App\Models\EmployeeHistory::create([
+                'user_id'         => $target->id,
+                'company_id'      => $actor->company_id,
+                'event_type'      => 'status_change',
+                'title'           => $target->is_active ? 'Account Activated' : 'Account Deactivated',
+                'description'     => 'Status changed by ' . $actor->name,
+                'effective_date'  => now()->toDateString(),
+                'performed_by_id' => $actor->id,
+            ]);
         }
 
         return $this->success((new UserResource($target->load(self::WITH)))->resolve(), 'Employee updated');

@@ -26,10 +26,12 @@ class RolePermissionSeeder extends Seeder
     private function seedRoles(): array
     {
         $definitions = [
-            Role::ADMIN     => ['Admin', 100, 'Full access to the whole company'],
-            Role::MANAGER   => ['Manager', 70, 'Manages a department and assigns projects to Team Leads'],
-            Role::TEAM_LEAD => ['Team Lead', 50, 'Splits projects into tasks and assigns them to team members'],
-            Role::EMPLOYEE  => ['Employee', 10, 'Works on assigned tasks'],
+            Role::SUPER_ADMIN => ['Super Admin', 100, 'Full access to the whole company and system settings'],
+            'admin'           => ['Admin', 100, 'Full access to the whole company and system settings'],
+            Role::HR          => ['HR', 80, 'Manages employee profiles, documents, attendance, and HR operations'],
+            Role::MANAGER     => ['Manager', 70, 'Manages a department and assigns projects to Team Leads'],
+            Role::TEAM_LEAD   => ['Team Lead', 50, 'Splits projects into tasks and assigns them to team members'],
+            Role::EMPLOYEE    => ['Employee', 10, 'Works on assigned tasks'],
         ];
 
         $roles = [];
@@ -48,25 +50,34 @@ class RolePermissionSeeder extends Seeder
     {
         // slug => description   (module is the part before the dot)
         $definitions = [
-            'organization.view'  => 'View company and departments',
+            'organization.view'   => 'View company and departments',
             'organization.manage' => 'Create/edit company, departments and designations',
-            'employees.view'     => 'View employee records',
-            'employees.manage'   => 'Create/edit/deactivate employees',
-            'projects.view'      => 'View projects',
-            'projects.manage'    => 'Create/edit projects',
-            'projects.assign'    => 'Assign projects to Team Leads',
-            'tasks.view'         => 'View tasks',
-            'tasks.manage'       => 'Create, assign and manage tasks',
-            'tasks.update'       => 'Update status/progress of tasks',
-            'time.view'          => 'View time tracking records',
-            'time.track'         => 'Start/pause/complete own task timer',
-            'chat.use'           => 'Use internal chat',
-            'reports.view'       => 'View reports and dashboards',
-            'attendance.view'    => 'View attendance records',
-            'attendance.record'  => 'Check in / check out',
-            'leave.view'         => 'View leave requests and balances',
-            'leave.apply'        => 'Apply for leave',
-            'leave.approve'      => 'Approve or reject leave',
+            'roles.manage'        => 'Manage roles and permissions (Super Admin only)',
+            'system.manage'       => 'Manage system settings and audit logs (Super Admin only)',
+            'employees.view'      => 'View employee records',
+            'employees.manage'    => 'Create/edit/deactivate employees',
+            'projects.view'       => 'View projects',
+            'projects.manage'     => 'Create/edit projects',
+            'projects.assign'     => 'Assign projects to Team Leads',
+            'tasks.view'          => 'View tasks',
+            'tasks.manage'        => 'Create, assign and manage tasks',
+            'tasks.update'        => 'Update status/progress of tasks',
+            'time.view'           => 'View time tracking records',
+            'time.track'          => 'Start/pause/complete own task timer',
+            'chat.use'            => 'Use internal chat',
+            'reports.view'        => 'View reports and dashboards',
+            'attendance.view'     => 'View attendance records',
+            'attendance.record'   => 'Check in / check out',
+            'attendance.manage'   => 'Manage attendance, regularizations and locations',
+            'leave.view'          => 'View leave requests and balances',
+            'leave.apply'         => 'Apply for leave',
+            'leave.approve'       => 'Approve or reject leave',
+            'leave.manage'        => 'Manage leave types and allocations',
+            'holidays.view'       => 'View company holidays',
+            'holidays.manage'     => 'Create and manage company holidays',
+            'documents.view'      => 'View employee documents',
+            'documents.manage'    => 'Upload and manage employee documents',
+            'documents.verify'    => 'Verify and approve employee documents',
         ];
 
         $permissions = [];
@@ -83,7 +94,9 @@ class RolePermissionSeeder extends Seeder
     /** @param array<string, Role> $roles @param array<string, Permission> $permissions */
     private function seedGrants(array $roles, array $permissions): void
     {
-        $adm = Role::ADMIN;
+        $sa  = Role::SUPER_ADMIN;
+        $adm = 'admin';
+        $hr  = Role::HR;
         $mgr = Role::MANAGER;
         $tl  = Role::TEAM_LEAD;
         $emp = Role::EMPLOYEE;
@@ -96,33 +109,49 @@ class RolePermissionSeeder extends Seeder
 
         // permission => [role => scope]
         $matrix = [
-            'organization.view'   => [$adm => $all, $mgr => $all],
-            'organization.manage' => [$adm => $all],
+            'organization.view'   => [$sa => $all, $adm => $all, $hr => $all, $mgr => $all],
+            // Role & permission management and system settings to Super Admin only (removed from HR)
+            'organization.manage' => [$sa => $all, $adm => $all],
+            'roles.manage'        => [$sa => $all, $adm => $all],
+            'system.manage'       => [$sa => $all, $adm => $all],
 
-            'employees.view'      => [$adm => $all, $mgr => $dept, $tl => $team, $emp => $self],
-            'employees.manage'    => [$adm => $all, $mgr => $dept],
+            'employees.view'      => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
+            'employees.manage'    => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept],
 
-            'projects.view'       => [$adm => $all, $mgr => $dept, $tl => $asg, $emp => $asg],
-            'projects.manage'     => [$adm => $all, $mgr => $dept],
-            'projects.assign'     => [$adm => $all, $mgr => $dept],
+            'projects.view'       => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $asg, $emp => $asg],
+            'projects.manage'     => [$sa => $all, $adm => $all, $mgr => $dept],
+            'projects.assign'     => [$sa => $all, $adm => $all, $mgr => $dept],
 
-            'tasks.view'          => [$adm => $all, $mgr => $dept, $tl => $team, $emp => $asg],
-            'tasks.manage'        => [$adm => $all, $tl => $team],
-            'tasks.update'        => [$adm => $all, $tl => $team, $emp => $asg],
+            'tasks.view'          => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $asg],
+            'tasks.manage'        => [$sa => $all, $adm => $all, $tl => $team],
+            'tasks.update'        => [$sa => $all, $adm => $all, $tl => $team, $emp => $asg],
 
-            'time.view'           => [$adm => $all, $mgr => $team, $tl => $team],
-            'time.track'          => [$emp => $self],
+            'time.view'           => [$sa => $all, $adm => $all, $hr => $all, $mgr => $team, $tl => $team],
+            'time.track'          => [$hr => $self, $emp => $self],
 
-            'chat.use'            => [$adm => $all, $mgr => $all, $tl => $all, $emp => $all],
+            'chat.use'            => [$sa => $all, $adm => $all, $hr => $all, $mgr => $all, $tl => $all, $emp => $all],
 
-            'reports.view'        => [$adm => $all, $mgr => $dept, $tl => $team],
+            'reports.view'        => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team],
 
-            'attendance.view'     => [$adm => $all, $mgr => $dept, $tl => $team, $emp => $self],
-            'attendance.record'   => [$adm => $self, $mgr => $self, $tl => $self, $emp => $self],
+            'attendance.view'     => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
+            // Super Admin does not record attendance
+            'attendance.record'   => [$hr => $self, $mgr => $self, $tl => $self, $emp => $self],
+            'attendance.manage'   => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept],
 
-            'leave.view'          => [$adm => $all, $mgr => $dept, $tl => $team, $emp => $self],
-            'leave.apply'         => [$adm => $self, $mgr => $self, $tl => $self, $emp => $self],
-            'leave.approve'       => [$adm => $all, $mgr => $dept],
+            'leave.view'          => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
+            // Super Admin does not apply for leave
+            'leave.apply'         => [$hr => $self, $mgr => $self, $tl => $self, $emp => $self],
+            'leave.approve'       => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team],
+            'leave.manage'        => [$sa => $all, $adm => $all, $hr => $all],
+
+            // Holidays: Allow add/edit/delete for super_admin and hr only. Everyone else gets read-only.
+            'holidays.view'       => [$sa => $all, $adm => $all, $hr => $all, $mgr => $all, $tl => $all, $emp => $all],
+            'holidays.manage'     => [$sa => $all, $adm => $all, $hr => $all],
+
+            // Documents: HR edit all profiles, verify documents
+            'documents.view'      => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
+            'documents.manage'    => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $emp => $self],
+            'documents.verify'    => [$sa => $all, $adm => $all, $hr => $all],
         ];
 
         $grants = array_fill_keys(array_keys($roles), []);
