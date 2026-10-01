@@ -1,0 +1,6 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/klupjyap/public_html/capeonn/
+    - /bin/mkdir -p $DEPLOYPATH
+    - /bin/cp -R * $DEPLOYPATH
