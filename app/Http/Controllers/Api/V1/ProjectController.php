@@ -300,6 +300,10 @@ class ProjectController extends Controller
         $actor = $request->user();
         $record = $this->findProjectForActor($request, $project, 'projects.manage');
 
+        if ($record->status === Project::STATUS_ARCHIVED) {
+            return $this->error('Archived projects are read-only and cannot be modified.', 422);
+        }
+
         $scope = $actor->scopeFor('projects.manage');
         if ($scope === Permission::SCOPE_DEPARTMENT) {
             if ($request->has('department_id') && (int) $request->input('department_id') !== (int) $actor->department_id) {
@@ -633,8 +637,8 @@ class ProjectController extends Controller
             return $this->error('Only administrators can delete projects. Managers may archive instead.', 403);
         }
 
-        if ($record->members()->exists()) {
-            return $this->error('Only empty projects with no members can be deleted. Please archive this project instead.', 422);
+        if ($record->members()->exists() || $record->tasks()->exists()) {
+            return $this->error('Only empty projects with no members or tasks can be deleted. Please archive this project instead.', 422);
         }
 
         DB::transaction(function () use ($record, $actor) {
@@ -655,6 +659,10 @@ class ProjectController extends Controller
     {
         $actor = $request->user();
         $record = $this->findProjectForActor($request, $project, 'projects.assign');
+
+        if ($record->status === Project::STATUS_ARCHIVED) {
+            return $this->error('Cannot assign a Team Lead to an archived project.', 422);
+        }
 
         if (! $this->access->canAssignLead($actor, $record)) {
             return $this->error('You do not have permission to assign a Team Lead to this project.', 403);

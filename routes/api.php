@@ -17,6 +17,8 @@ use App\Http\Controllers\Api\V1\OfficeLocationController;
 use App\Http\Controllers\Api\V1\PasswordResetController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\RoleController;
+use App\Http\Controllers\Api\V1\TaskController;
+use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
 use Illuminate\Support\Facades\Route;
 
@@ -26,6 +28,8 @@ Route::pattern('designation', '[0-9]+');
 Route::pattern('employee', '[0-9]+');
 Route::pattern('project', '[0-9]+');
 Route::pattern('member', '[0-9]+');
+Route::pattern('task', '[0-9]+');
+Route::pattern('entry', '[0-9]+');
 
 Route::prefix('v1')->group(function () {
 
@@ -185,10 +189,38 @@ Route::prefix('v1')->group(function () {
                 Route::delete('/{project}/members/{member}', [ProjectController::class, 'removeMember']);
             });
 
+            // Project tasks (Phase 5)
+            Route::get('/{project}/tasks', [TaskController::class, 'index'])->middleware('permission:tasks.view');
+            Route::post('/{project}/tasks', [TaskController::class, 'store'])->middleware('permission:tasks.manage');
+
             // Project completion workflow
             Route::post('/{project}/request-completion', [ProjectController::class, 'requestCompletion']);
             Route::post('/{project}/approve-completion', [ProjectController::class, 'approveCompletion']);
             Route::post('/{project}/reject-completion', [ProjectController::class, 'rejectCompletion']);
+        });
+
+        // ---- Tasks (Phase 5) ----
+        Route::prefix('tasks')->group(function () {
+            Route::get('/my', [TaskController::class, 'myTasks'])->middleware('permission:tasks.view');
+            Route::get('/{task}', [TaskController::class, 'show'])->middleware('permission:tasks.view');
+            Route::put('/{task}', [TaskController::class, 'update'])->middleware('permission:tasks.manage');
+            Route::delete('/{task}', [TaskController::class, 'destroy'])->middleware('permission:tasks.manage');
+            Route::post('/{task}/status', [TaskController::class, 'updateStatus'])->middleware('permission:tasks.update');
+            Route::post('/{task}/assign', [TaskController::class, 'assign'])->middleware('permission:tasks.manage');
+            Route::get('/{task}/subtasks', [TaskController::class, 'subtasks'])->middleware('permission:tasks.view');
+            Route::post('/{task}/subtasks', [TaskController::class, 'createSubtask'])->middleware('permission:tasks.manage');
+
+            // Timer & manual time entries
+            Route::post('/{task}/timer/start', [TimeEntryController::class, 'startTimer'])->middleware('permission:time.track');
+            Route::post('/{task}/timer/stop', [TimeEntryController::class, 'stopTimer'])->middleware('permission:time.track');
+            Route::post('/{task}/time-entries', [TimeEntryController::class, 'storeManual'])->middleware('permission:time.track');
+        });
+
+        // ---- Time Entries (Phase 5) ----
+        Route::prefix('time-entries')->group(function () {
+            Route::get('/', [TimeEntryController::class, 'index'])->middleware('permission:time.view');
+            Route::get('/active', [TimeEntryController::class, 'activeTimer'])->middleware('permission:time.track');
+            Route::delete('/{entry}', [TimeEntryController::class, 'destroy'])->middleware('permission:time.track');
         });
     });
 });

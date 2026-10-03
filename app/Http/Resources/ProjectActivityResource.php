@@ -12,6 +12,7 @@ class ProjectActivityResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'task_id' => $this->task_id,
             'action' => $this->action,
             'field' => $this->field,
             'old_value' => $this->old_value,

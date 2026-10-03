@@ -67,7 +67,6 @@ class Project extends Model
         'deadline',
         'estimated_hours',
         'budget',
-        'progress',
     ];
 
     protected function casts(): array
@@ -77,7 +76,6 @@ class Project extends Model
             'deadline' => 'date',
             'estimated_hours' => 'decimal:2',
             'budget' => 'decimal:2',
-            'progress' => 'integer',
             'status_changed_at' => 'datetime',
             'completion_requested_at' => 'datetime',
         ];
@@ -133,6 +131,136 @@ class Project extends Model
     public function activities(): HasMany
     {
         return $this->hasMany(ProjectActivity::class)->orderByDesc('id');
+    }
+
+    public function tasks(): HasMany
+    {
+        return $this->hasMany(Task::class);
+    }
+
+    public function timeEntries(): HasMany
+    {
+        return $this->hasMany(TimeEntry::class);
+    }
+
+    /**
+     * Dynamically computed progress based on completed tasks.
+     * Phase 5 requirement: computed from tasks, null if no tasks exist.
+     */
+    public function getProgressAttribute(): ?int
+    {
+        $total = $this->relationLoaded('tasks') ? $this->tasks->count() : $this->tasks()->count();
+        if ($total === 0) {
+            return null;
+        }
+
+        $completed = $this->relationLoaded('tasks')
+            ? $this->tasks->where('status', Task::STATUS_COMPLETED)->count()
+            : $this->tasks()->where('status', Task::STATUS_COMPLETED)->count();
+
+        return (int) round(($completed / $total) * 100);
+    }
+
+    /**
+     * Aggregated task metrics for project dashboard and overview.
+     */
+    public function getTaskMetricsAttribute(): array
+    {
+        $tasks = $this->relationLoaded('tasks') ? $this->tasks : $this->tasks()->get();
+        $total = $tasks->count();
+
+        if ($total === 0) {
+            return [
+                'total_tasks' => 0,
+                'completed_tasks' => 0,
+                'in_progress_tasks' => 0,
+                'review_tasks' => 0,
+                'backlog_tasks' => 0,
+                'overdue_tasks' => 0,
+                'progress_percentage' => 0,
+                'estimated_hours_total' => 0.0,
+                'actual_hours_total' => 0.0,
+            ];
+        }
+
+        $completed = $tasks->where('status', Task::STATUS_COMPLETED)->count();
+        $inProgress = $tasks->where('status', Task::STATUS_IN_PROGRESS)->count();
+        $review = $tasks->where('status', Task::STATUS_REVIEW)->count();
+        $backlog = $tasks->whereIn('status', [Task::STATUS_BACKLOG, Task::STATUS_ASSIGNED])->count();
+        $overdue = $tasks->filter(fn ($t) => $t->is_overdue)->count();
+
+        return [
+            'total_tasks' => $total,
+            'completed_tasks' => $completed,
+            'in_progress_tasks' => $inProgress,
+            'review_tasks' => $review,
+            'backlog_tasks' => $backlog,
+            'overdue_tasks' => $overdue,
+            'progress_percentage' => (int) round(($completed / $total) * 100),
+            'estimated_hours_total' => round((float) $tasks->sum('estimated_hours'), 2),
+            'actual_hours_total' => round((float) $tasks->sum('actual_hours'), 2),
+        ];
+    }
+
+    /**
+     * Checks if project accepts new work (tasks, time entries).
+     * On Hold, Completed, Archived, and Cancelled projects block new tasks and time entries.
+     */
+    public function acceptsWork(): bool
+    {
+        return ! in_array($this->status, [
+            self::STATUS_ON_HOLD,
+            self::STATUS_COMPLETED,
+            self::STATUS_ARCHIVED,
+            self::STATUS_CANCELLED,
+        ], true);
+    }
+
+    public function canAcceptTasks(): bool
+    {
+        return $this->acceptsWork();
+    }
+
+    public function canAcceptTimeEntries(): bool
+    {
+        return $this->acceptsWork();
+    }
+
+    public function getAcceptsWorkAttribute(): bool
+    {
+        return $this->acceptsWork();
+    }
+
+    public function getIsArchivedAttribute(): bool
+    {
+        return $this->status === self::STATUS_ARCHIVED;
+    }
+
+    /**
+     * Checks if a user is an assigned member in project_members.
+     */
+    public function isMember(int|User $user): bool
+    {
+        $userId = $user instanceof User ? $user->id : (int) $user;
+        return $this->members()->where('users.id', $userId)->exists();
+    }
+
+    /**
+     * Checks if a user is the assigned Team Lead.
+     */
+    public function isTeamLead(int|User $user): bool
+    {
+        $userId = $user instanceof User ? $user->id : (int) $user;
+        return (int) $this->team_lead_id === $userId;
+    }
+
+    /**
+     * Tasks are only assignable to project members (and the assigned team lead).
+     */
+    public function canAssignTaskTo(int|User $user): bool
+    {
+        $userId = $user instanceof User ? $user->id : (int) $user;
+        return $this->isMember($userId) || $this->isTeamLead($userId);
     }
 
     public function getIsOverdueAttribute(): bool
@@ -195,9 +323,11 @@ class Project extends Model
         ?string $newValue = null,
         ?string $reason = null,
         ?array $metadata = null,
+        ?int $taskId = null,
     ): ProjectActivity {
         return $this->activities()->create([
             'user_id'     => $userId,
+            'task_id'     => $taskId,
             'action'      => $action,
             'field'       => $field,
             'old_value'   => $oldValue,

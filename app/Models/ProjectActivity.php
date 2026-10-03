@@ -12,6 +12,7 @@ class ProjectActivity extends Model
 
     protected $fillable = [
         'project_id',
+        'task_id',
         'user_id',
         'action',
         'field',
@@ -46,6 +47,11 @@ class ProjectActivity extends Model
     public function project(): BelongsTo
     {
         return $this->belongsTo(Project::class);
+    }
+
+    public function task(): BelongsTo
+    {
+        return $this->belongsTo(Task::class);
     }
 
     public function user(): BelongsTo

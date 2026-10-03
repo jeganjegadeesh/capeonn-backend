@@ -166,6 +166,11 @@ class User extends Authenticatable
             ->withTimestamps();
     }
 
+    public function assignedTasks(): HasMany
+    {
+        return $this->hasMany(Task::class, 'assigned_to_id');
+    }
+
     /**
      * The user's permissions as [slug => scope], e.g. ['employees.view' => 'department'].
      * Load `role.permissions` first to avoid extra queries.

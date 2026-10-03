@@ -6,10 +6,12 @@ use App\Models\Company;
 use App\Models\Department;
 use App\Models\Project;
 use App\Models\Role;
+use App\Models\Task;
 use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -697,5 +699,232 @@ class ProjectTest extends TestCase
 
         $this->expectException(\RuntimeException::class);
         $activity->update(['description' => 'Tampered activity']);
+    }
+
+    public function test_status_lifecycle_and_accepts_work_rules(): void
+    {
+        $proj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptEng->id,
+            'name' => 'Accepts Work Project',
+            'code' => 'PRJ-WORK-1',
+            'team_lead_id' => $this->teamLead->id,
+            'status' => Project::STATUS_PLANNED,
+        ]);
+
+        // Planned and Active accept work
+        $this->assertTrue($proj->acceptsWork());
+        $this->assertTrue($proj->canAcceptTasks());
+        $this->assertTrue($proj->canAcceptTimeEntries());
+
+        $proj->status = Project::STATUS_ACTIVE;
+        $this->assertTrue($proj->acceptsWork());
+
+        // On Hold, Completed, Archived, and Cancelled do NOT accept work
+        foreach ([Project::STATUS_ON_HOLD, Project::STATUS_COMPLETED, Project::STATUS_ARCHIVED, Project::STATUS_CANCELLED] as $blockedStatus) {
+            $proj->status = $blockedStatus;
+            $this->assertFalse($proj->acceptsWork(), "Status {$blockedStatus} should not accept work");
+            $this->assertFalse($proj->canAcceptTasks());
+            $this->assertFalse($proj->canAcceptTimeEntries());
+        }
+
+        // Check API resource returns accepts_work and is_archived
+        $proj->status = Project::STATUS_ARCHIVED;
+        $proj->save();
+
+        Sanctum::actingAs($this->admin);
+        $res = $this->getJson("/api/v1/projects/{$proj->id}");
+        $res->assertOk()
+            ->assertJsonPath('data.accepts_work', false)
+            ->assertJsonPath('data.is_archived', true);
+
+        // Archived projects are read-only: update and lead assignment return 422
+        $this->putJson("/api/v1/projects/{$proj->id}", [
+            'name' => 'Attempted Edit of Archived',
+            'department_id' => $this->deptEng->id,
+        ])->assertStatus(422);
+
+        $this->postJson("/api/v1/projects/{$proj->id}/lead", [
+            'team_lead_id' => $this->teamLead->id,
+        ])->assertStatus(422);
+    }
+
+    public function test_manual_progress_column_removed_and_task_metrics_placeholder(): void
+    {
+        // 1. Database table must NOT have stored progress column
+        $this->assertFalse(Schema::hasColumn('projects', 'progress'));
+
+        $proj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptEng->id,
+            'name' => 'Progress Placeholder Project',
+            'code' => 'PRJ-PROG-1',
+            'status' => Project::STATUS_PLANNED,
+        ]);
+
+        Sanctum::actingAs($this->admin);
+        $res = $this->getJson("/api/v1/projects/{$proj->id}");
+        $res->assertOk()
+            ->assertJsonPath('data.progress', null)
+            ->assertJsonPath('data.task_metrics_available', false);
+    }
+
+    public function test_team_lead_permissions_and_validation(): void
+    {
+        $proj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptEng->id,
+            'name' => 'TL Permissions Project',
+            'code' => 'PRJ-TL-PERM',
+            'team_lead_id' => $this->teamLead->id,
+            'status' => Project::STATUS_ACTIVE,
+        ]);
+
+        // Team Lead can add and remove members on own project using projects.team
+        Sanctum::actingAs($this->teamLead);
+        $addRes = $this->postJson("/api/v1/projects/{$proj->id}/members", [
+            'user_id' => $this->employee->id,
+            'project_role' => 'Developer',
+        ]);
+        $addRes->assertCreated();
+
+        // Team Lead cannot assign Team Lead (projects.assign is manager/admin only)
+        $leadRes = $this->postJson("/api/v1/projects/{$proj->id}/lead", [
+            'team_lead_id' => $this->teamLead->id,
+        ]);
+        $leadRes->assertStatus(403);
+
+        // Team Lead is counted in total_team_count (1 member + 1 lead = 2)
+        $detailRes = $this->getJson("/api/v1/projects/{$proj->id}");
+        $detailRes->assertOk()
+            ->assertJsonPath('data.members_count', 1)
+            ->assertJsonPath('data.total_team_count', 2);
+
+        // Validation rejects assigning a non-team-lead user as lead
+        Sanctum::actingAs($this->manager);
+        $invalidLeadRes = $this->postJson("/api/v1/projects/{$proj->id}/lead", [
+            'team_lead_id' => $this->employee->id,
+        ]);
+        $invalidLeadRes->assertStatus(422)->assertJsonValidationErrors('team_lead_id');
+    }
+
+    public function test_manager_visibility_by_membership_across_departments_and_task_assignment(): void
+    {
+        // Project in Design department, managed by another manager
+        $otherManager = User::factory()->create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptDesign->id,
+            'role_id' => Role::where('slug', Role::MANAGER)->first()->id,
+        ]);
+
+        $designProj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptDesign->id,
+            'name' => 'Design Overhaul Project',
+            'code' => 'PRJ-DES-1',
+            'status' => Project::STATUS_ACTIVE,
+        ]);
+
+        // Engineering manager initially cannot see this Design project
+        Sanctum::actingAs($this->manager);
+        $this->getJson("/api/v1/projects/{$designProj->id}")->assertStatus(403);
+
+        // Add Engineering manager as a member of the Design project
+        $designProj->members()->attach($this->manager->id, ['project_role' => 'Technical Advisor']);
+
+        // Now Engineering manager CAN view the project (membership gives access)
+        $res = $this->getJson("/api/v1/projects/{$designProj->id}");
+        $res->assertOk()->assertJsonPath('data.name', 'Design Overhaul Project');
+
+        $listRes = $this->getJson('/api/v1/projects');
+        $listRes->assertOk();
+        $ids = collect($listRes->json('data'))->pluck('id')->all();
+        $this->assertContains($designProj->id, $ids);
+
+        // Task assignment verification: only members and team lead can be assigned tasks
+        $this->assertTrue($designProj->canAssignTaskTo($this->manager));
+        $this->assertFalse($designProj->canAssignTaskTo($this->employee)); // Employee is not on this project
+    }
+
+    public function test_audit_log_structure_with_task_id_and_values(): void
+    {
+        $this->assertTrue(Schema::hasColumn('project_activities', 'field'));
+        $this->assertTrue(Schema::hasColumn('project_activities', 'old_value'));
+        $this->assertTrue(Schema::hasColumn('project_activities', 'new_value'));
+        $this->assertTrue(Schema::hasColumn('project_activities', 'reason'));
+        $this->assertTrue(Schema::hasColumn('project_activities', 'task_id'));
+
+        $proj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptEng->id,
+            'name' => 'Audit Structure Project',
+            'code' => 'PRJ-AUDIT-2',
+            'status' => Project::STATUS_ACTIVE,
+        ]);
+
+        $task = Task::create([
+            'company_id' => $this->company->id,
+            'project_id' => $proj->id,
+            'title' => 'Initial Task',
+            'status' => 'backlog',
+        ]);
+
+        $activity = $proj->recordActivity(
+            action: 'task_status_changed',
+            description: 'Task status updated to in_progress',
+            userId: $this->admin->id,
+            field: 'status',
+            oldValue: 'backlog',
+            newValue: 'in_progress',
+            reason: 'Work started by developer',
+            taskId: $task->id
+        );
+
+        $this->assertDatabaseHas('project_activities', [
+            'id' => $activity->id,
+            'project_id' => $proj->id,
+            'task_id' => $task->id,
+            'action' => 'task_status_changed',
+            'field' => 'status',
+            'old_value' => 'backlog',
+            'new_value' => 'in_progress',
+            'reason' => 'Work started by developer',
+        ]);
+    }
+
+    public function test_tasks_table_reserves_project_id_and_prevents_deletion_with_tasks(): void
+    {
+        $this->assertTrue(Schema::hasTable('tasks'));
+        $this->assertTrue(Schema::hasColumn('tasks', 'project_id'));
+
+        $proj = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->deptEng->id,
+            'name' => 'Deletable Project Check',
+            'code' => 'PRJ-DEL-CHK',
+            'status' => Project::STATUS_PLANNED,
+        ]);
+
+        // Create a task under this project
+        $task = Task::create([
+            'company_id' => $this->company->id,
+            'project_id' => $proj->id,
+            'title' => 'Sample Phase 5 Task',
+            'status' => 'backlog',
+        ]);
+
+        $this->assertEquals($proj->id, $task->project->id);
+        $this->assertCount(1, $proj->tasks);
+
+        // Admin cannot delete a project that has tasks even if it has no members
+        Sanctum::actingAs($this->admin);
+        $delRes = $this->deleteJson("/api/v1/projects/{$proj->id}");
+        $delRes->assertStatus(422)
+            ->assertJsonPath('message', 'Only empty projects with no members or tasks can be deleted. Please archive this project instead.');
+
+        // Deleting the task allows admin to delete the empty project
+        $task->forceDelete();
+        $this->deleteJson("/api/v1/projects/{$proj->id}")->assertOk();
+        $this->assertSoftDeleted('projects', ['id' => $proj->id]);
     }
 }

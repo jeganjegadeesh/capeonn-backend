@@ -311,7 +311,7 @@ class AccessControl
     }
 
     /**
-     * Delete is restricted to Super Admin / Admin only, and only if project is empty (no members).
+     * Delete is restricted to Super Admin / Admin only, and only if project is empty (no members, no tasks).
      */
     public function canDeleteProject(User $actor, \App\Models\Project $project): bool
     {
@@ -319,11 +319,242 @@ class AccessControl
             return false;
         }
 
-        // Empty check: no members
-        if ($project->members()->exists()) {
+        // Empty check: no members, no tasks
+        if ($project->members()->exists() || $project->tasks()->exists()) {
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * Task visibility follows project access: an actor must first have project access.
+     */
+    public function canAccessTask(User $actor, \App\Models\Task $task, string $permission = 'tasks.view'): bool
+    {
+        if (! $this->canAccessProject($actor, $task->project, 'projects.view')) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        $scope = $actor->scopeFor($permission);
+        if ($scope === null) {
+            return false;
+        }
+
+        if ($scope === Permission::SCOPE_ALL || $scope === Permission::SCOPE_DEPARTMENT) {
+            return true;
+        }
+
+        if ($scope === Permission::SCOPE_TEAM) {
+            return (int) $task->assigned_to_id === (int) $actor->id
+                || (int) $task->project->team_lead_id === (int) $actor->id
+                || in_array((int) $task->assigned_to_id, $this->subordinateIds($actor), true);
+        }
+
+        if ($scope === Permission::SCOPE_ASSIGNED || $scope === Permission::SCOPE_SELF) {
+            return (int) $task->assigned_to_id === (int) $actor->id
+                || (int) $task->project->team_lead_id === (int) $actor->id
+                || $task->project->isMember($actor);
+        }
+
+        return false;
+    }
+
+    /**
+     * Constrain tasks query according to actor permissions and project access.
+     */
+    public function constrainTasks(Builder $query, User $actor, string $permission = 'tasks.view'): Builder
+    {
+        $scope = $actor->scopeFor($permission);
+
+        if ($scope === null || $actor->company_id === null) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $query->where('tasks.company_id', $actor->company_id);
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return $query;
+        }
+
+        return match ($scope) {
+            Permission::SCOPE_ALL => $query,
+            Permission::SCOPE_DEPARTMENT => $query->whereHas('project', function ($p) use ($actor) {
+                $p->where(function ($sub) use ($actor) {
+                    if ($actor->department_id !== null) {
+                        $sub->where('projects.department_id', $actor->department_id);
+                    }
+                    $sub->orWhere('projects.manager_id', $actor->id)
+                        ->orWhere('projects.team_lead_id', $actor->id)
+                        ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+                });
+            }),
+            Permission::SCOPE_TEAM => $query->where(function ($q) use ($actor) {
+                $q->where('tasks.assigned_to_id', $actor->id)
+                    ->orWhereIn('tasks.assigned_to_id', $this->subordinateIds($actor))
+                    ->orWhereHas('project', fn ($p) => $p->where('team_lead_id', $actor->id));
+            }),
+            Permission::SCOPE_ASSIGNED, Permission::SCOPE_SELF => $query->where(function ($q) use ($actor) {
+                $q->where('tasks.assigned_to_id', $actor->id)
+                    ->orWhereHas('project', function ($p) use ($actor) {
+                        $p->where('team_lead_id', $actor->id)
+                            ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+                    });
+            }),
+            default => $query->whereRaw('1 = 0'),
+        };
+    }
+
+    /**
+     * May actor create tasks in this project?
+     * (Admin, Manager of project's department/manager, or assigned Team Lead).
+     * Project must also accept work (not on_hold, completed, archived, cancelled).
+     */
+    public function canManageTaskInProject(User $actor, \App\Models\Project $project): bool
+    {
+        if ($actor->company_id === null || (int) $project->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        $scope = $actor->scopeFor('tasks.manage');
+        if ($scope === null) {
+            return false;
+        }
+
+        if ($scope === Permission::SCOPE_ALL) {
+            return true;
+        }
+
+        if ($scope === Permission::SCOPE_DEPARTMENT) {
+            return ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id;
+        }
+
+        if ($scope === Permission::SCOPE_TEAM || $scope === Permission::SCOPE_ASSIGNED) {
+            return (int) $project->team_lead_id === (int) $actor->id;
+        }
+
+        return false;
+    }
+
+    /**
+     * May actor edit, reassign, or delete this task?
+     */
+    public function canManageTask(User $actor, \App\Models\Task $task): bool
+    {
+        return $this->canManageTaskInProject($actor, $task->project);
+    }
+
+    /**
+     * May actor update the status of this task?
+     * Managers & TLs with manage permission, or assignees with tasks.update.
+     */
+    public function canUpdateTaskStatus(User $actor, \App\Models\Task $task): bool
+    {
+        if ($this->canManageTask($actor, $task)) {
+            return true;
+        }
+
+        if ($actor->hasPermission('tasks.update') && (int) $task->assigned_to_id === (int) $actor->id) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * May actor start/pause/complete time tracking on this task?
+     * Actor must be assigned to task (or project TL).
+     */
+    public function canTrackTime(User $actor, \App\Models\Task $task): bool
+    {
+        if (! $actor->hasPermission('time.track')) {
+            return false;
+        }
+
+        return (int) $task->assigned_to_id === (int) $actor->id || (int) $task->project->team_lead_id === (int) $actor->id;
+    }
+
+    /**
+     * Constrain time entries query according to actor permissions.
+     */
+    public function constrainTimeEntries(Builder $query, User $actor, string $permission = 'time.view'): Builder
+    {
+        $scope = $actor->scopeFor($permission);
+
+        if ($scope === null || $actor->company_id === null) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $query->where('time_entries.company_id', $actor->company_id);
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return $query;
+        }
+
+        return match ($scope) {
+            Permission::SCOPE_ALL => $query,
+            Permission::SCOPE_DEPARTMENT => $query->where(function ($q) use ($actor) {
+                if ($actor->department_id !== null) {
+                    $q->whereHas('user', fn ($u) => $u->where('department_id', $actor->department_id))
+                        ->orWhereHas('project', fn ($p) => $p->where('department_id', $actor->department_id));
+                }
+            }),
+            Permission::SCOPE_TEAM => $query->where(function ($q) use ($actor) {
+                $q->where('time_entries.user_id', $actor->id)
+                    ->orWhereIn('time_entries.user_id', $this->subordinateIds($actor))
+                    ->orWhereHas('project', fn ($p) => $p->where('team_lead_id', $actor->id));
+            }),
+            Permission::SCOPE_SELF => $query->where('time_entries.user_id', $actor->id),
+            default => $query->whereRaw('1 = 0'),
+        };
+    }
+
+    /**
+     * Can actor access a specific time entry?
+     */
+    public function canAccessTimeEntry(User $actor, \App\Models\TimeEntry $entry, string $permission = 'time.view'): bool
+    {
+        if ($actor->company_id === null || (int) $entry->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        $scope = $actor->scopeFor($permission);
+        if ($scope === null) {
+            return false;
+        }
+
+        if ($scope === Permission::SCOPE_ALL) {
+            return true;
+        }
+
+        if ($scope === Permission::SCOPE_DEPARTMENT) {
+            return ($actor->department_id !== null && (int) $entry->user->department_id === (int) $actor->department_id)
+                || (int) $entry->project->manager_id === (int) $actor->id;
+        }
+
+        if ($scope === Permission::SCOPE_TEAM) {
+            return (int) $entry->user_id === (int) $actor->id
+                || (int) $entry->project->team_lead_id === (int) $actor->id
+                || in_array((int) $entry->user_id, $this->subordinateIds($actor), true);
+        }
+
+        if ($scope === Permission::SCOPE_SELF) {
+            return (int) $entry->user_id === (int) $actor->id;
+        }
+
+        return false;
     }
 }
