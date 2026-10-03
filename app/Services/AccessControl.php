@@ -135,4 +135,195 @@ class AccessControl
     {
         return (int) ($user->role?->level ?? 0);
     }
+
+    /** Constrain a projects query based on the actor's permission scope */
+    /** Constrain a projects query based on the actor's permission scope */
+    public function constrainProjects(Builder $query, User $actor, string $permission = 'projects.view'): Builder
+    {
+        $scope = $actor->scopeFor($permission);
+
+        if ($scope === null || $actor->company_id === null) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $query->where('projects.company_id', $actor->company_id);
+
+        return match ($scope) {
+            Permission::SCOPE_ALL        => $query,
+            Permission::SCOPE_DEPARTMENT => $query->where(function ($sub) use ($actor) {
+                if ($actor->department_id !== null) {
+                    $sub->where('projects.department_id', $actor->department_id);
+                }
+                $sub->orWhere('projects.manager_id', $actor->id)
+                    ->orWhere('projects.team_lead_id', $actor->id)
+                    ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+            }),
+            Permission::SCOPE_ASSIGNED   => $query->where(function ($sub) use ($actor) {
+                $sub->where('projects.team_lead_id', $actor->id)
+                    ->orWhere('projects.manager_id', $actor->id)
+                    ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+            }),
+            Permission::SCOPE_TEAM       => $query->whereIn('projects.team_lead_id', $this->subordinateIds($actor)),
+            Permission::SCOPE_SELF       => $query->where('projects.team_lead_id', $actor->id),
+            default                      => $query->whereRaw('1 = 0'),
+        };
+    }
+
+    /** Check if an actor can access a specific project with the given permission */
+    public function canAccessProject(User $actor, \App\Models\Project $project, string $permission = 'projects.view'): bool
+    {
+        $scope = $actor->scopeFor($permission);
+
+        if ($scope === null
+            || $actor->company_id === null
+            || (int) $project->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        return match ($scope) {
+            Permission::SCOPE_ALL        => true,
+            Permission::SCOPE_DEPARTMENT => ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id
+                || (int) $project->team_lead_id === (int) $actor->id
+                || $project->members()->where('users.id', $actor->id)->exists(),
+            Permission::SCOPE_ASSIGNED   => (int) $project->team_lead_id === (int) $actor->id
+                || (int) $project->manager_id === (int) $actor->id
+                || $project->members()->where('users.id', $actor->id)->exists(),
+            Permission::SCOPE_TEAM       => in_array((int) $project->team_lead_id, $this->subordinateIds($actor), true),
+            Permission::SCOPE_SELF       => (int) $project->team_lead_id === (int) $actor->id,
+            default                      => false,
+        };
+    }
+
+    /** May the actor edit this project? (Admins, or Managers in own department/manager_id) */
+    public function canManageProject(User $actor, \App\Models\Project $project): bool
+    {
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        if ($actor->hasPermission('projects.manage')) {
+            return ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id;
+        }
+
+        return false;
+    }
+
+    /** May the actor assign or change the Team Lead on this project? (Managers own dept, Admin) */
+    public function canAssignLead(User $actor, \App\Models\Project $project): bool
+    {
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        if ($actor->hasPermission('projects.assign')) {
+            return ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id;
+        }
+
+        return false;
+    }
+
+    /** May the actor assign lead or manage team members? (Legacy helper) */
+    public function canAssignProject(User $actor, \App\Models\Project $project): bool
+    {
+        return $this->canAssignLead($actor, $project) || $this->canManageProjectTeam($actor, $project);
+    }
+
+    /**
+     * May the actor add, update, or remove members from this project?
+     * Team Lead can manage members on their own project.
+     * Managers can manage on their department's projects.
+     * Admins can manage all.
+     */
+    public function canManageProjectTeam(User $actor, \App\Models\Project $project): bool
+    {
+        if ($actor->company_id === null || (int) $project->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        // On Hold, Completed, Archived, and Cancelled projects accept no new members or changes
+        if (in_array(strtolower($project->status), ['on_hold', 'completed', 'archived', 'cancelled'], true)) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        $scope = $actor->scopeFor('projects.team');
+        if ($scope === null) {
+            return false;
+        }
+
+        if ($scope === Permission::SCOPE_ALL) {
+            return true;
+        }
+
+        if ($scope === Permission::SCOPE_DEPARTMENT) {
+            return ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id;
+        }
+
+        if ($scope === Permission::SCOPE_ASSIGNED) {
+            // Team Lead can manage team only on projects where they are assigned as Team Lead
+            return (int) $project->team_lead_id === (int) $actor->id;
+        }
+
+        return false;
+    }
+
+    /**
+     * Audit log visibility: Super Admin, Manager (own department), and Team Lead (own project).
+     * Regular employees and HR cannot view activity logs.
+     */
+    public function canViewProjectActivity(User $actor, \App\Models\Project $project): bool
+    {
+        if ($actor->company_id === null || (int) $project->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        if (! $actor->hasPermission('projects.activity')) {
+            return false;
+        }
+
+        $scope = $actor->scopeFor('projects.activity');
+        if ($scope === Permission::SCOPE_ALL) {
+            return true;
+        }
+
+        if ($scope === Permission::SCOPE_DEPARTMENT) {
+            return ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id)
+                || (int) $project->manager_id === (int) $actor->id;
+        }
+
+        if ($scope === Permission::SCOPE_ASSIGNED) {
+            // Team lead on own project only
+            return (int) $project->team_lead_id === (int) $actor->id;
+        }
+
+        return false;
+    }
+
+    /**
+     * Delete is restricted to Super Admin / Admin only, and only if project is empty (no members).
+     */
+    public function canDeleteProject(User $actor, \App\Models\Project $project): bool
+    {
+        if (! $actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return false;
+        }
+
+        // Empty check: no members
+        if ($project->members()->exists()) {
+            return false;
+        }
+
+        return true;
+    }
 }

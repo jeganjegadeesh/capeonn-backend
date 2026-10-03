@@ -59,6 +59,9 @@ class RolePermissionSeeder extends Seeder
             'projects.view'       => 'View projects',
             'projects.manage'     => 'Create/edit projects',
             'projects.assign'     => 'Assign projects to Team Leads',
+            'projects.team'       => 'Manage project team members (Team Lead own project, Manager own dept)',
+            'projects.activity'   => 'View project audit activity history',
+            'projects.status'     => 'Transition project status or request completion',
             'tasks.view'          => 'View tasks',
             'tasks.manage'        => 'Create, assign and manage tasks',
             'tasks.update'        => 'Update status/progress of tasks',
@@ -118,9 +121,12 @@ class RolePermissionSeeder extends Seeder
             'employees.view'      => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
             'employees.manage'    => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept],
 
-            'projects.view'       => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $asg, $emp => $asg],
+            'projects.view'       => [$sa => $all, $adm => $all, $hr => $asg, $mgr => $dept, $tl => $asg, $emp => $asg],
             'projects.manage'     => [$sa => $all, $adm => $all, $mgr => $dept],
             'projects.assign'     => [$sa => $all, $adm => $all, $mgr => $dept],
+            'projects.team'       => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $asg],
+            'projects.activity'   => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $asg],
+            'projects.status'     => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $asg],
 
             'tasks.view'          => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $asg],
             'tasks.manage'        => [$sa => $all, $adm => $all, $tl => $team],

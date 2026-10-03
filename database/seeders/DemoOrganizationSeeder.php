@@ -132,6 +132,86 @@ class DemoOrganizationSeeder extends Seeder
                 ]
             );
         }
+
+        // Phase 4: Demo Projects
+        $p1 = \App\Models\Project::firstOrCreate(
+            ['company_id' => $company->id, 'code' => 'PRJ-001'],
+            [
+                'department_id' => $engineering->id,
+                'name' => 'Capeonn Cross-Platform Platform',
+                'client_name' => 'Capeonn Internal',
+                'description' => 'Cross-platform employee and project management platform with Laravel backend and Flutter frontend.',
+                'status' => \App\Models\Project::STATUS_IN_PROGRESS,
+                'priority' => \App\Models\Project::PRIORITY_HIGH,
+                'team_lead_id' => $teamLead->id,
+                'created_by_id' => $manager->id,
+                'start_date' => '2026-09-01',
+                'deadline' => '2026-11-30',
+                'estimated_hours' => 240,
+                'budget' => 35000,
+                'progress' => 65,
+            ]
+        );
+        $p1->members()->syncWithoutDetaching([
+            $teamLead->id => ['project_role' => 'Team Lead', 'assigned_by_id' => $manager->id, 'assigned_at' => now()->subDays(30)],
+            $roles['employee'] ? User::where('email', 'employee1@capeonn.test')->value('id') : 4 => ['project_role' => 'Flutter Developer', 'assigned_by_id' => $teamLead->id, 'assigned_at' => now()->subDays(25)],
+            $roles['employee'] ? User::where('email', 'employee2@capeonn.test')->value('id') : 5 => ['project_role' => 'UI/UX Designer', 'assigned_by_id' => $teamLead->id, 'assigned_at' => now()->subDays(25)],
+        ]);
+        if ($p1->wasRecentlyCreated || $p1->activities()->count() === 0) {
+            $p1->recordActivity('created', "Project created by {$manager->name}", $manager->id);
+            $p1->recordActivity('lead_assigned', "{$teamLead->name} assigned as Team Lead by {$manager->name}", $manager->id);
+            $p1->recordActivity('status_changed', "Status changed to In Progress by {$manager->name}", $manager->id);
+        }
+
+        $p2 = \App\Models\Project::firstOrCreate(
+            ['company_id' => $company->id, 'code' => 'PRJ-002'],
+            [
+                'department_id' => $engineering->id,
+                'name' => 'FinTech Payment Gateway Integration',
+                'client_name' => 'SwiftPay Ltd',
+                'description' => 'High-security payment orchestration layer with tokenization and 3DS authentication.',
+                'status' => \App\Models\Project::STATUS_IN_PROGRESS,
+                'priority' => \App\Models\Project::PRIORITY_URGENT,
+                'team_lead_id' => $teamLead->id,
+                'created_by_id' => $manager->id,
+                'start_date' => '2026-09-15',
+                'deadline' => '2026-10-15',
+                'estimated_hours' => 120,
+                'budget' => 20000,
+                'progress' => 80,
+            ]
+        );
+        $p2->members()->syncWithoutDetaching([
+            $teamLead->id => ['project_role' => 'Tech Lead', 'assigned_by_id' => $manager->id, 'assigned_at' => now()->subDays(20)],
+            User::where('email', 'employee1@capeonn.test')->value('id') => ['project_role' => 'Backend Architect', 'assigned_by_id' => $teamLead->id, 'assigned_at' => now()->subDays(18)],
+        ]);
+        if ($p2->wasRecentlyCreated || $p2->activities()->count() === 0) {
+            $p2->recordActivity('created', "Project created by {$manager->name}", $manager->id);
+            $p2->recordActivity('lead_assigned', "{$teamLead->name} assigned as Team Lead by {$manager->name}", $manager->id);
+        }
+
+        $p3 = \App\Models\Project::firstOrCreate(
+            ['company_id' => $company->id, 'code' => 'PRJ-003'],
+            [
+                'department_id' => $engineering->id,
+                'name' => 'Cloud Infrastructure & Microservices',
+                'client_name' => 'Apex Global',
+                'description' => 'Kubernetes containerization and zero-downtime CI/CD deployment pipelines.',
+                'status' => \App\Models\Project::STATUS_PLANNING,
+                'priority' => \App\Models\Project::PRIORITY_MEDIUM,
+                'team_lead_id' => $teamLead->id,
+                'created_by_id' => $manager->id,
+                'start_date' => '2026-10-10',
+                'deadline' => '2026-12-20',
+                'estimated_hours' => 180,
+                'budget' => 45000,
+                'progress' => 15,
+            ]
+        );
+        if ($p3->wasRecentlyCreated || $p3->activities()->count() === 0) {
+            $p3->recordActivity('created', "Project created by {$manager->name}", $manager->id);
+            $p3->recordActivity('lead_assigned', "{$teamLead->name} assigned as Team Lead by {$manager->name}", $manager->id);
+        }
     }
 
     private function user(Company $company, string $name, string $email, int $number, string $roleSlug,

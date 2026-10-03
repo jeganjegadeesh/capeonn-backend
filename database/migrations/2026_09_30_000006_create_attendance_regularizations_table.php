@@ -23,7 +23,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['company_id', 'status']);
-            $table->index(['company_id', 'user_id', 'date']);
+            $table->index(['company_id', 'user_id', 'date'], 'att_reg_comp_user_date_idx');
         });
     }
 

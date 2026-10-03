@@ -149,6 +149,23 @@ class User extends Authenticatable
         return $this->hasMany(LeaveBalance::class);
     }
 
+    public function ledProjects(): HasMany
+    {
+        return $this->hasMany(Project::class, 'team_lead_id');
+    }
+
+    public function createdProjects(): HasMany
+    {
+        return $this->hasMany(Project::class, 'created_by_id');
+    }
+
+    public function projects(): BelongsToMany
+    {
+        return $this->belongsToMany(Project::class, 'project_members')
+            ->withPivot(['id', 'project_role', 'assigned_at', 'assigned_by_id'])
+            ->withTimestamps();
+    }
+
     /**
      * The user's permissions as [slug => scope], e.g. ['employees.view' => 'department'].
      * Load `role.permissions` first to avoid extra queries.

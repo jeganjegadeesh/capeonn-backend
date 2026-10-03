@@ -20,7 +20,7 @@ return new class extends Migration
             $table->foreignId('performed_by_id')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamps();
 
-            $table->index(['company_id', 'user_id', 'effective_date']);
+            $table->index(['company_id', 'user_id', 'effective_date'], 'emp_hist_comp_user_date_idx');
         });
     }
 

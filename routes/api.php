@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\V1\HolidayController;
 use App\Http\Controllers\Api\V1\LeaveController;
 use App\Http\Controllers\Api\V1\OfficeLocationController;
 use App\Http\Controllers\Api\V1\PasswordResetController;
+use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\UploadController;
 use Illuminate\Support\Facades\Route;
@@ -23,6 +24,8 @@ use Illuminate\Support\Facades\Route;
 Route::pattern('department', '[0-9]+');
 Route::pattern('designation', '[0-9]+');
 Route::pattern('employee', '[0-9]+');
+Route::pattern('project', '[0-9]+');
+Route::pattern('member', '[0-9]+');
 
 Route::prefix('v1')->group(function () {
 
@@ -150,6 +153,42 @@ Route::prefix('v1')->group(function () {
             Route::post('/holidays', [HolidayController::class, 'store']);
             Route::put('/holidays/{id}', [HolidayController::class, 'update']);
             Route::delete('/holidays/{id}', [HolidayController::class, 'destroy']);
+        });
+
+        // ---- Projects (Phase 4) ----
+        Route::prefix('projects')->group(function () {
+            Route::get('/dashboard', [ProjectController::class, 'dashboard'])->middleware('permission:projects.view');
+
+            Route::middleware('permission:projects.view')->group(function () {
+                Route::get('/', [ProjectController::class, 'index']);
+                Route::get('/{project}', [ProjectController::class, 'show']);
+                Route::get('/{project}/members', [ProjectController::class, 'members']);
+                Route::get('/{project}/activities', [ProjectController::class, 'activities']);
+            });
+
+            Route::middleware('permission:projects.manage')->group(function () {
+                Route::post('/', [ProjectController::class, 'store']);
+                Route::put('/{project}', [ProjectController::class, 'update']);
+                Route::delete('/{project}', [ProjectController::class, 'destroy']);
+            });
+
+            // Status transitions (Admins, Managers, Team Leads on assigned projects)
+            Route::post('/{project}/status', [ProjectController::class, 'updateStatus'])->middleware('permission:projects.status');
+
+            // Team Lead assignment (Admins & Managers only)
+            Route::post('/{project}/lead', [ProjectController::class, 'assignLead'])->middleware('permission:projects.assign');
+
+            // Team Members management (Admins, Managers, and Team Leads on own projects)
+            Route::middleware('permission:projects.team')->group(function () {
+                Route::post('/{project}/members', [ProjectController::class, 'addMember']);
+                Route::put('/{project}/members/{member}', [ProjectController::class, 'updateMember']);
+                Route::delete('/{project}/members/{member}', [ProjectController::class, 'removeMember']);
+            });
+
+            // Project completion workflow
+            Route::post('/{project}/request-completion', [ProjectController::class, 'requestCompletion']);
+            Route::post('/{project}/approve-completion', [ProjectController::class, 'approveCompletion']);
+            Route::post('/{project}/reject-completion', [ProjectController::class, 'rejectCompletion']);
         });
     });
 });
