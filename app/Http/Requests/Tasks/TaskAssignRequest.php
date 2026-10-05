@@ -35,6 +35,7 @@ class TaskAssignRequest extends FormRequest
                     }
                 },
             ],
+            'reason' => ['nullable', 'string', 'max:1000'],
         ];
     }
 }

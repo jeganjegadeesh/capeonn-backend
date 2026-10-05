@@ -19,6 +19,15 @@ class TaskRequest extends FormRequest
         if ($this->has('priority') && is_string($this->input('priority'))) {
             $this->merge(['priority' => strtolower(trim($this->input('priority')))]);
         }
+
+        // If creating a subtask via POST /tasks/{task}/subtasks
+        $routeTask = $this->route('task');
+        if ($this->isMethod('POST') && $routeTask && ! $this->has('parent_task_id')) {
+            $taskId = $routeTask instanceof Task ? $routeTask->id : (int) $routeTask;
+            if ($taskId) {
+                $this->merge(['parent_task_id' => $taskId]);
+            }
+        }
     }
 
     public function rules(): array
@@ -37,6 +46,7 @@ class TaskRequest extends FormRequest
                     Task::PRIORITY_URGENT,
                 ]),
             ],
+            'position' => ['nullable', 'integer', 'min:0'],
             'due_date' => ['nullable', 'date'],
             'estimated_hours' => ['nullable', 'numeric', 'min:0', 'max:9999.99'],
             'assigned_to_id' => [
@@ -75,10 +85,13 @@ class TaskRequest extends FormRequest
                         $fail('Nested subtasks beyond one level are not supported.');
                         return;
                     }
-                    $routeTask = $this->route('task');
-                    $taskId = $routeTask instanceof Task ? $routeTask->id : $routeTask;
-                    if ($taskId && (int) $value === (int) $taskId) {
-                        $fail('A task cannot be its own parent.');
+                    $isSubtaskRoute = $this->is('*tasks/*/subtasks*');
+                    if (! $isSubtaskRoute) {
+                        $routeTask = $this->route('task');
+                        $taskId = $routeTask instanceof Task ? $routeTask->id : $routeTask;
+                        if ($taskId && (int) $value === (int) $taskId) {
+                            $fail('A task cannot be its own parent.');
+                        }
                     }
                 },
             ],

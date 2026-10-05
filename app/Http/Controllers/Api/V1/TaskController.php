@@ -2,16 +2,24 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Events\Tasks\TaskAssignedEvent;
+use App\Events\Tasks\TaskChangesRequestedEvent;
+use App\Events\Tasks\TaskCompletedEvent;
+use App\Events\Tasks\TaskReopenedEvent;
+use App\Events\Tasks\TaskSubmittedForReviewEvent;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Tasks\TaskAssignRequest;
 use App\Http\Requests\Tasks\TaskRequest;
 use App\Http\Requests\Tasks\TaskStatusRequest;
 use App\Http\Resources\TaskDetailResource;
 use App\Http\Resources\TaskResource;
+use App\Http\Resources\TimeEntryResource;
 use App\Models\Project;
 use App\Models\Task;
+use App\Models\TimeEntry;
 use App\Models\User;
 use App\Services\AccessControl;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +27,7 @@ use Illuminate\Support\Facades\DB;
 class TaskController extends Controller
 {
     private const WITH = [
-        'assignedTo:id,name,email,employee_code,avatar_url',
+        'assignedTo:id,name,email,employee_code',
         'createdBy:id,name',
         'timeEntries',
     ];
@@ -43,6 +51,11 @@ class TaskController extends Controller
         $query = $project->tasks()
             ->with(self::WITH)
             ->withCount('subtasks');
+
+        // Regular employees (without manage permission and not team lead) see only their assigned tasks
+        if (! $this->access->canManageTaskInProject($actor, $project) && (int) $project->team_lead_id !== (int) $actor->id) {
+            $query->where('assigned_to_id', $actor->id);
+        }
 
         // Status filter (single or comma-separated)
         if ($request->filled('status')) {
@@ -81,14 +94,39 @@ class TaskController extends Controller
             });
         }
 
-        // Sorting
-        $sortBy = $request->query('sort_by', 'created_at');
-        $sortDir = strtolower($request->query('sort_dir', 'desc')) === 'asc' ? 'asc' : 'desc';
+        // Sorting (includes position)
+        $sortBy = $request->query('sort_by', 'position');
+        $sortDir = strtolower($request->query('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
 
-        if (in_array($sortBy, ['created_at', 'due_date', 'priority', 'status', 'title', 'actual_hours'], true)) {
-            $query->orderBy($sortBy, $sortDir);
+        if (in_array($sortBy, ['created_at', 'due_date', 'priority', 'status', 'title', 'actual_hours', 'position'], true)) {
+            $query->orderBy($sortBy, $sortDir)->orderByDesc('id');
         } else {
-            $query->orderByDesc('id');
+            $query->orderBy('position', 'asc')->orderByDesc('id');
+        }
+
+        // Pagination if requested
+        if ($request->has('per_page') || $request->has('page')) {
+            $perPage = max(1, min(100, (int) $request->query('per_page', 25)));
+            $paginator = $query->paginate($perPage);
+
+            return response()->json([
+                'data'  => TaskResource::collection($paginator->items()),
+                'links' => [
+                    'first' => $paginator->url(1),
+                    'last'  => $paginator->url($paginator->lastPage()),
+                    'prev'  => $paginator->previousPageUrl(),
+                    'next'  => $paginator->nextPageUrl(),
+                ],
+                'meta'  => [
+                    'current_page' => $paginator->currentPage(),
+                    'from'         => $paginator->firstItem(),
+                    'last_page'    => $paginator->lastPage(),
+                    'path'         => $paginator->path(),
+                    'per_page'     => $paginator->perPage(),
+                    'to'           => $paginator->lastItem(),
+                    'total'        => $paginator->total(),
+                ],
+            ]);
         }
 
         $tasks = $query->get();
@@ -122,6 +160,14 @@ class TaskController extends Controller
         $assignedToId = $data['assigned_to_id'] ?? null;
         $status = $assignedToId ? Task::STATUS_ASSIGNED : Task::STATUS_BACKLOG;
 
+        // Due date warning check
+        $warning = null;
+        if (! empty($data['due_date']) && ! empty($project->deadline)) {
+            if (Carbon::parse($data['due_date'])->gt(Carbon::parse($project->deadline))) {
+                $warning = "Task due date ({$data['due_date']}) is after project deadline ({$project->deadline->toDateString()}).";
+            }
+        }
+
         $task = DB::transaction(function () use ($project, $actor, $data, $assignedToId, $status) {
             $task = Task::create([
                 'company_id'      => $project->company_id,
@@ -131,6 +177,7 @@ class TaskController extends Controller
                 'description'     => $data['description'] ?? null,
                 'status'          => $status,
                 'priority'        => $data['priority'] ?? Task::PRIORITY_MEDIUM,
+                'position'        => $data['position'] ?? 0,
                 'assigned_to_id'  => $assignedToId,
                 'created_by_id'   => $actor->id,
                 'due_date'        => $data['due_date'] ?? null,
@@ -156,6 +203,8 @@ class TaskController extends Controller
                     newValue: (string) $assignedToId,
                     taskId: $task->id,
                 );
+
+                TaskAssignedEvent::dispatch($task, $assignedUser, $actor);
             }
 
             return $task;
@@ -164,10 +213,16 @@ class TaskController extends Controller
         $task->load(self::WITH);
         $task->loadCount('subtasks');
 
-        return response()->json([
+        $response = [
             'message' => 'Task created successfully.',
             'data'    => TaskResource::make($task),
-        ], 201);
+        ];
+
+        if ($warning) {
+            $response['warning'] = $warning;
+        }
+
+        return response()->json($response, 201);
     }
 
     /**
@@ -182,14 +237,25 @@ class TaskController extends Controller
             return response()->json(['message' => 'Unauthorized task access.'], 403);
         }
 
+        // Time detail visibility: assignees, TL, Manager, Admin see all. Regular members see own entries.
+        $canSeeAllTime = $this->access->canManageTask($actor, $task)
+            || (int) $task->assigned_to_id === (int) $actor->id;
+
+        // Activity log visibility follows project activity permissions
+        $canSeeActivities = $this->access->canViewProjectActivity($actor, $task->project);
+
         $task->load([
             'project:id,name,code,status,manager_id,team_lead_id',
-            'assignedTo:id,name,email,employee_code,avatar_url',
+            'assignedTo:id,name,email,employee_code',
             'createdBy:id,name',
             'parentTask:id,title,status',
-            'subtasks' => fn ($q) => $q->with(['assignedTo:id,name,email,avatar_url'])->withCount('subtasks'),
-            'timeEntries' => fn ($q) => $q->with(['user:id,name,email,avatar_url'])->latest('id')->limit(50),
-            'activities' => fn ($q) => $q->with(['user:id,name'])->latest('id')->limit(50),
+            'subtasks' => fn ($q) => $q->with(['assignedTo:id,name,email'])->withCount('subtasks'),
+            'timeEntries' => fn ($q) => $canSeeAllTime
+                ? $q->with(['user:id,name,email'])->latest('id')->limit(50)
+                : $q->where('user_id', $actor->id)->with(['user:id,name,email'])->latest('id')->limit(50),
+            'activities' => fn ($q) => $canSeeActivities
+                ? $q->with(['user:id,name'])->latest('id')->limit(50)
+                : $q->whereRaw('1 = 0'),
         ]);
         $task->loadCount('subtasks');
 
@@ -217,17 +283,42 @@ class TaskController extends Controller
         }
 
         $data = $request->validated();
+
+        // parent_task_id, project_id, company_id are immutable after creation
+        unset($data['parent_task_id'], $data['project_id'], $data['company_id']);
+
         $oldAssigneeId = $task->assigned_to_id;
         $newAssigneeId = array_key_exists('assigned_to_id', $data) ? $data['assigned_to_id'] : $oldAssigneeId;
 
-        DB::transaction(function () use ($task, $actor, $data, $oldAssigneeId, $newAssigneeId) {
+        // Due date warning check
+        $warning = null;
+        if (! empty($data['due_date']) && ! empty($task->project->deadline)) {
+            if (Carbon::parse($data['due_date'])->gt(Carbon::parse($task->project->deadline))) {
+                $warning = "Task due date ({$data['due_date']}) is after project deadline ({$task->project->deadline->toDateString()}).";
+            }
+        }
+
+        DB::transaction(function () use ($task, $actor, $data, $oldAssigneeId, $newAssigneeId, $request) {
             $changes = [];
-            foreach (['title', 'description', 'priority', 'due_date', 'estimated_hours'] as $field) {
-                if (array_key_exists($field, $data) && (string) $task->{$field} !== (string) $data[$field]) {
-                    $changes[$field] = [
-                        'old' => (string) $task->{$field},
-                        'new' => (string) $data[$field],
-                    ];
+            foreach (['title', 'description', 'priority', 'due_date', 'estimated_hours', 'position'] as $field) {
+                if (! array_key_exists($field, $data)) {
+                    continue;
+                }
+
+                if ($field === 'due_date') {
+                    // Compare formatted date strings (Y-m-d) to prevent false change log entries
+                    $oldVal = $task->due_date ? Carbon::parse($task->due_date)->format('Y-m-d') : null;
+                    $newVal = ! empty($data['due_date']) ? Carbon::parse($data['due_date'])->format('Y-m-d') : null;
+                    if ($oldVal !== $newVal) {
+                        $changes[$field] = ['old' => (string) $oldVal, 'new' => (string) $newVal];
+                    }
+                } else {
+                    if ((string) $task->{$field} !== (string) $data[$field]) {
+                        $changes[$field] = [
+                            'old' => (string) $task->{$field},
+                            'new' => (string) $data[$field],
+                        ];
+                    }
                 }
             }
 
@@ -249,6 +340,22 @@ class TaskController extends Controller
             // Handle assignment change if present
             if (array_key_exists('assigned_to_id', $data) && (int) $oldAssigneeId !== (int) $newAssigneeId) {
                 $newAssignee = $newAssigneeId ? User::find($newAssigneeId) : null;
+                $oldAssignee = $oldAssigneeId ? User::find($oldAssigneeId) : null;
+
+                // Stop any running timer for the previous assignee
+                if ($oldAssigneeId) {
+                    $runningEntries = $task->timeEntries()->running()->where('user_id', $oldAssigneeId)->get();
+                    foreach ($runningEntries as $re) {
+                        $re->stop();
+                        $task->project->recordActivity(
+                            action: 'timer_stopped',
+                            description: "Running timer on task '{$task->title}' for previous assignee was automatically stopped upon reassignment.",
+                            userId: $actor->id,
+                            taskId: $task->id,
+                        );
+                    }
+                }
+
                 $desc = $newAssignee
                     ? "Task '{$task->title}' assigned to {$newAssignee->name}."
                     : "Task '{$task->title}' unassigned.";
@@ -267,22 +374,32 @@ class TaskController extends Controller
                     field: 'assigned_to_id',
                     oldValue: (string) $oldAssigneeId,
                     newValue: (string) $newAssigneeId,
+                    reason: $request->input('reason'),
                     taskId: $task->id,
                 );
+
+                TaskAssignedEvent::dispatch($task, $newAssignee, $actor, $oldAssignee, $request->input('reason'));
             }
         });
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
-        return response()->json([
+        $response = [
             'message' => 'Task updated successfully.',
             'data'    => TaskResource::make($task),
-        ]);
+        ];
+
+        if ($warning) {
+            $response['warning'] = $warning;
+        }
+
+        return response()->json($response);
     }
 
     /**
      * DELETE /tasks/{task}
      * Soft delete a task and its subtasks.
+     * Blocked if task or subtasks have any logged time entries or active running timers.
      */
     public function destroy(Request $request, Task $task): JsonResponse
     {
@@ -298,9 +415,23 @@ class TaskController extends Controller
             ], 422);
         }
 
-        if ($task->timeEntries()->running()->exists()) {
+        // Subtask IDs list
+        $subtaskIds = $task->subtasks()->pluck('id')->all();
+        $allTaskIds = array_merge([$task->id], $subtaskIds);
+
+        // Block deletion if any active timers are running on the task or subtasks
+        $hasRunning = TimeEntry::whereIn('task_id', $allTaskIds)->running()->exists();
+        if ($hasRunning) {
             return response()->json([
                 'message' => 'Cannot delete task with an active running timer. Stop the timer first.',
+            ], 422);
+        }
+
+        // Block deletion if any time entries exist on the task or subtasks
+        $hasTimeEntries = TimeEntry::whereIn('task_id', $allTaskIds)->exists();
+        if ($hasTimeEntries) {
+            return response()->json([
+                'message' => 'Cannot delete a task that has logged time entries. Archive or cancel the task instead.',
             ], 422);
         }
 
@@ -353,7 +484,18 @@ class TaskController extends Controller
             ]);
         }
 
-        $allowed = Task::ALLOWED_TRANSITIONS[$oldStatus] ?? [];
+        $isSubtask = $task->parent_task_id !== null;
+        $allowed = $isSubtask
+            ? [
+                Task::STATUS_BACKLOG          => [Task::STATUS_ASSIGNED, Task::STATUS_IN_PROGRESS, Task::STATUS_COMPLETED],
+                Task::STATUS_ASSIGNED         => [Task::STATUS_IN_PROGRESS, Task::STATUS_COMPLETED, Task::STATUS_BACKLOG],
+                Task::STATUS_IN_PROGRESS      => [Task::STATUS_COMPLETED, Task::STATUS_REVIEW, Task::STATUS_ASSIGNED],
+                Task::STATUS_REVIEW           => [Task::STATUS_CHANGES_REQUIRED, Task::STATUS_COMPLETED],
+                Task::STATUS_CHANGES_REQUIRED => [Task::STATUS_IN_PROGRESS],
+                Task::STATUS_COMPLETED        => [Task::STATUS_IN_PROGRESS, Task::STATUS_BACKLOG],
+            ][$oldStatus] ?? []
+            : (Task::ALLOWED_TRANSITIONS[$oldStatus] ?? []);
+
         if (! in_array($newStatus, $allowed, true)) {
             return response()->json([
                 'message' => "Status transition from '{$oldStatus}' to '{$newStatus}' is not permitted.",
@@ -361,12 +503,61 @@ class TaskController extends Controller
             ], 422);
         }
 
-        // Subtask completion validation
-        if ($newStatus === Task::STATUS_COMPLETED) {
+        // Review -> Completed approval rules (for parent tasks):
+        // 1. Nobody should approve their own task
+        // 2. Only Team Lead, Manager, or Admin can approve
+        if ($newStatus === Task::STATUS_COMPLETED && ! $isSubtask) {
+            if ((int) $task->assigned_to_id === (int) $actor->id) {
+                return response()->json([
+                    'message' => 'Assignees cannot approve their own work.',
+                ], 403);
+            }
+
+            if (! $this->access->canManageTask($actor, $task)) {
+                return response()->json([
+                    'message' => 'Only a Team Lead, Manager, or Admin can approve and complete tasks.',
+                ], 403);
+            }
+
+            // Subtask completion validation
             $incompleteCount = $task->subtasks()->where('status', '!=', Task::STATUS_COMPLETED)->count();
             if ($incompleteCount > 0) {
                 return response()->json([
                     'message' => "Cannot complete task: {$incompleteCount} subtask(s) are still incomplete.",
+                ], 422);
+            }
+        }
+
+        // Review -> Changes Required rules:
+        // 1. Only Team Lead, Manager, or Admin can request changes
+        // 2. Requires reason
+        if ($newStatus === Task::STATUS_CHANGES_REQUIRED) {
+            if (! $this->access->canManageTask($actor, $task)) {
+                return response()->json([
+                    'message' => 'Only a Team Lead, Manager, or Admin can request changes on tasks.',
+                ], 403);
+            }
+
+            if (empty(trim((string) $reason))) {
+                return response()->json([
+                    'message' => 'A reason is required when requesting changes.',
+                ], 422);
+            }
+        }
+
+        // Reopening completed task rules:
+        // 1. Only Team Lead, Manager, or Admin
+        // 2. Requires reason
+        if ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS) {
+            if (! $this->access->canManageTask($actor, $task)) {
+                return response()->json([
+                    'message' => 'Only a Team Lead, Manager, or Admin can reopen a completed task.',
+                ], 403);
+            }
+
+            if (empty(trim((string) $reason))) {
+                return response()->json([
+                    'message' => 'A reason is required to reopen a completed task.',
                 ], 422);
             }
         }
@@ -392,10 +583,28 @@ class TaskController extends Controller
 
             $task->update($updates);
 
+            // Distinct activity action
+            $action = match ($newStatus) {
+                Task::STATUS_REVIEW           => 'task_submitted_for_review',
+                Task::STATUS_CHANGES_REQUIRED => 'task_changes_requested',
+                Task::STATUS_COMPLETED        => 'task_completed',
+                default                       => ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS)
+                    ? 'task_reopened'
+                    : 'task_status_changed',
+            };
+
+            $desc = match ($action) {
+                'task_submitted_for_review' => "Task '{$task->title}' was submitted for review by {$actor->name}.",
+                'task_changes_requested'    => "Changes were requested on task '{$task->title}' by {$actor->name}: {$reason}",
+                'task_completed'            => "Task '{$task->title}' was approved and completed by {$actor->name}.",
+                'task_reopened'             => "Task '{$task->title}' was reopened by {$actor->name}: {$reason}",
+                default                     => "Task '{$task->title}' status changed from '{$oldStatus}' to '{$newStatus}' by {$actor->name}.",
+            };
+
             // Audit activity log
             $task->project->recordActivity(
-                action: 'task_status_changed',
-                description: "Task '{$task->title}' status changed from '{$oldStatus}' to '{$newStatus}' by {$actor->name}.",
+                action: $action,
+                description: $desc,
                 userId: $actor->id,
                 field: 'status',
                 oldValue: $oldStatus,
@@ -403,6 +612,17 @@ class TaskController extends Controller
                 reason: $reason,
                 taskId: $task->id,
             );
+
+            // Fire corresponding task events
+            if ($newStatus === Task::STATUS_REVIEW) {
+                TaskSubmittedForReviewEvent::dispatch($task, $actor, $reason);
+            } elseif ($newStatus === Task::STATUS_CHANGES_REQUIRED) {
+                TaskChangesRequestedEvent::dispatch($task, $actor, (string) $reason);
+            } elseif ($newStatus === Task::STATUS_COMPLETED) {
+                TaskCompletedEvent::dispatch($task, $actor, $reason);
+            } elseif ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS) {
+                TaskReopenedEvent::dispatch($task, $actor, (string) $reason);
+            }
         });
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
@@ -435,6 +655,7 @@ class TaskController extends Controller
 
         $oldAssigneeId = $task->assigned_to_id;
         $newAssigneeId = $request->input('assigned_to_id');
+        $reason = $request->input('reason');
 
         if ((int) $oldAssigneeId === (int) $newAssigneeId) {
             return response()->json([
@@ -443,7 +664,21 @@ class TaskController extends Controller
             ]);
         }
 
-        DB::transaction(function () use ($task, $actor, $oldAssigneeId, $newAssigneeId) {
+        DB::transaction(function () use ($task, $actor, $oldAssigneeId, $newAssigneeId, $reason) {
+            // Stop any running timer for previous assignee
+            if ($oldAssigneeId) {
+                $runningEntries = $task->timeEntries()->running()->where('user_id', $oldAssigneeId)->get();
+                foreach ($runningEntries as $re) {
+                    $re->stop();
+                    $task->project->recordActivity(
+                        action: 'timer_stopped',
+                        description: "Running timer on task '{$task->title}' for previous assignee was automatically stopped upon reassignment.",
+                        userId: $actor->id,
+                        taskId: $task->id,
+                    );
+                }
+            }
+
             $updates = ['assigned_to_id' => $newAssigneeId];
 
             if ($newAssigneeId && $task->status === Task::STATUS_BACKLOG) {
@@ -455,6 +690,8 @@ class TaskController extends Controller
             $task->update($updates);
 
             $newAssignee = $newAssigneeId ? User::find($newAssigneeId) : null;
+            $oldAssignee = $oldAssigneeId ? User::find($oldAssigneeId) : null;
+
             $desc = $newAssignee
                 ? "Task '{$task->title}' assigned to {$newAssignee->name}."
                 : "Task '{$task->title}' was unassigned.";
@@ -466,8 +703,11 @@ class TaskController extends Controller
                 field: 'assigned_to_id',
                 oldValue: (string) $oldAssigneeId,
                 newValue: (string) $newAssigneeId,
+                reason: $reason,
                 taskId: $task->id,
             );
+
+            TaskAssignedEvent::dispatch($task, $newAssignee, $actor, $oldAssignee, $reason);
         });
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
@@ -508,10 +748,92 @@ class TaskController extends Controller
                 ->where('status', '!=', Task::STATUS_COMPLETED);
         }
 
-        $tasks = $query->orderBy('due_date', 'asc')->orderByDesc('id')->get();
+        $query->orderBy('due_date', 'asc')->orderByDesc('id');
+
+        if ($request->has('per_page') || $request->has('page')) {
+            $perPage = max(1, min(100, (int) $request->query('per_page', 25)));
+            $paginator = $query->paginate($perPage);
+
+            return response()->json([
+                'data'  => TaskResource::collection($paginator->items()),
+                'links' => [
+                    'first' => $paginator->url(1),
+                    'last'  => $paginator->url($paginator->lastPage()),
+                    'prev'  => $paginator->previousPageUrl(),
+                    'next'  => $paginator->nextPageUrl(),
+                ],
+                'meta'  => [
+                    'current_page' => $paginator->currentPage(),
+                    'from'         => $paginator->firstItem(),
+                    'last_page'    => $paginator->lastPage(),
+                    'path'         => $paginator->path(),
+                    'per_page'     => $paginator->perPage(),
+                    'to'           => $paginator->lastItem(),
+                    'total'        => $paginator->total(),
+                ],
+            ]);
+        }
+
+        $tasks = $query->get();
 
         return response()->json([
             'data' => TaskResource::collection($tasks),
+        ]);
+    }
+
+    /**
+     * GET /tasks/my-work-today
+     * Work summary today: tasks due today, overdue tasks, in progress tasks, and hours logged today.
+     */
+    public function myWorkToday(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        $today = Carbon::today()->toDateString();
+
+        $dueToday = Task::where('assigned_to_id', $actor->id)
+            ->whereDate('due_date', $today)
+            ->where('status', '!=', Task::STATUS_COMPLETED)
+            ->with(self::WITH)
+            ->get();
+
+        $overdue = Task::where('assigned_to_id', $actor->id)
+            ->whereDate('due_date', '<', $today)
+            ->where('status', '!=', Task::STATUS_COMPLETED)
+            ->with(self::WITH)
+            ->get();
+
+        $inProgress = Task::where('assigned_to_id', $actor->id)
+            ->where('status', Task::STATUS_IN_PROGRESS)
+            ->with(self::WITH)
+            ->get();
+
+        // Hours logged today: completed entries today + active timer elapsed today
+        $completedSecondsToday = (int) TimeEntry::where('user_id', $actor->id)
+            ->whereDate('started_at', $today)
+            ->completed()
+            ->sum('duration_seconds');
+
+        $activeTimer = TimeEntry::with(self::WITH)
+            ->where('user_id', $actor->id)
+            ->running()
+            ->first();
+
+        $activeSeconds = 0;
+        if ($activeTimer) {
+            $effectiveEnd = $activeTimer->is_paused ? $activeTimer->paused_at : now();
+            $activeSeconds = max(0, (int) $activeTimer->started_at->diffInSeconds($effectiveEnd));
+        }
+
+        $totalHoursToday = round(($completedSecondsToday + $activeSeconds) / 3600, 2);
+
+        return response()->json([
+            'data' => [
+                'due_today_tasks'    => TaskResource::collection($dueToday),
+                'overdue_tasks'      => TaskResource::collection($overdue),
+                'in_progress_tasks'  => TaskResource::collection($inProgress),
+                'hours_logged_today' => $totalHoursToday,
+                'active_timer'       => $activeTimer ? TimeEntryResource::make($activeTimer) : null,
+            ],
         ]);
     }
 
@@ -530,6 +852,7 @@ class TaskController extends Controller
         $subtasks = $task->subtasks()
             ->with(self::WITH)
             ->withCount('subtasks')
+            ->orderBy('position', 'asc')
             ->orderBy('id', 'asc')
             ->get();
 
@@ -541,10 +864,82 @@ class TaskController extends Controller
     /**
      * POST /tasks/{task}/subtasks
      * Create a subtask directly on a parent task.
+     * Enforces one-level nesting and explicitly sets parent_task_id.
      */
     public function createSubtask(TaskRequest $request, Task $task): JsonResponse
     {
-        $request->merge(['parent_task_id' => $task->id]);
-        return $this->store($request, $task->project);
+        $actor = $request->user();
+
+        if (! $this->access->canManageTask($actor, $task)) {
+            return response()->json([
+                'message' => 'You do not have permission to create subtasks in this project.',
+            ], 403);
+        }
+
+        if (! $task->project->acceptsWork()) {
+            return response()->json([
+                'message' => "Project status [{$task->project->status}] does not accept new tasks or modifications.",
+            ], 422);
+        }
+
+        // Subtask cannot be created on another subtask (only 1-level nesting)
+        if ($task->parent_task_id !== null) {
+            return response()->json([
+                'message' => 'Nested subtasks beyond one level are not supported.',
+            ], 422);
+        }
+
+        $data = $request->validated();
+        $assignedToId = $data['assigned_to_id'] ?? null;
+        $status = $assignedToId ? Task::STATUS_ASSIGNED : Task::STATUS_BACKLOG;
+
+        $subtask = DB::transaction(function () use ($task, $actor, $data, $assignedToId, $status) {
+            $created = Task::create([
+                'company_id'      => $task->company_id,
+                'project_id'      => $task->project_id,
+                'parent_task_id'  => $task->id,
+                'title'           => $data['title'],
+                'description'     => $data['description'] ?? null,
+                'status'          => $status,
+                'priority'        => $data['priority'] ?? Task::PRIORITY_MEDIUM,
+                'position'        => $data['position'] ?? 0,
+                'assigned_to_id'  => $assignedToId,
+                'created_by_id'   => $actor->id,
+                'due_date'        => $data['due_date'] ?? null,
+                'estimated_hours' => $data['estimated_hours'] ?? null,
+                'actual_hours'    => 0,
+            ]);
+
+            $task->project->recordActivity(
+                action: 'task_created',
+                description: "Subtask '{$created->title}' was created under task '{$task->title}' by {$actor->name}.",
+                userId: $actor->id,
+                taskId: $created->id,
+            );
+
+            if ($assignedToId) {
+                $assignedUser = User::find($assignedToId);
+                $task->project->recordActivity(
+                    action: 'task_assigned',
+                    description: "Subtask '{$created->title}' assigned to {$assignedUser?->name}.",
+                    userId: $actor->id,
+                    field: 'assigned_to_id',
+                    newValue: (string) $assignedToId,
+                    taskId: $created->id,
+                );
+
+                TaskAssignedEvent::dispatch($created, $assignedUser, $actor);
+            }
+
+            return $created;
+        });
+
+        $subtask->load(self::WITH);
+        $subtask->loadCount('subtasks');
+
+        return response()->json([
+            'message' => 'Subtask created successfully.',
+            'data'    => TaskResource::make($subtask),
+        ], 201);
     }
 }

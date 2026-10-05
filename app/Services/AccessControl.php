@@ -398,13 +398,14 @@ class AccessControl
                     ->orWhereIn('tasks.assigned_to_id', $this->subordinateIds($actor))
                     ->orWhereHas('project', fn ($p) => $p->where('team_lead_id', $actor->id));
             }),
-            Permission::SCOPE_ASSIGNED, Permission::SCOPE_SELF => $query->where(function ($q) use ($actor) {
+            Permission::SCOPE_ASSIGNED => $query->where(function ($q) use ($actor) {
                 $q->where('tasks.assigned_to_id', $actor->id)
                     ->orWhereHas('project', function ($p) use ($actor) {
                         $p->where('team_lead_id', $actor->id)
                             ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
                     });
             }),
+            Permission::SCOPE_SELF => $query->where('tasks.assigned_to_id', $actor->id),
             default => $query->whereRaw('1 = 0'),
         };
     }
@@ -473,10 +474,16 @@ class AccessControl
     /**
      * May actor start/pause/complete time tracking on this task?
      * Actor must be assigned to task (or project TL).
+     * Tasks in review or completed cannot have active timers.
      */
     public function canTrackTime(User $actor, \App\Models\Task $task): bool
     {
         if (! $actor->hasPermission('time.track')) {
+            return false;
+        }
+
+        // Allow timers only in backlog, assigned, in_progress, and changes_required
+        if (in_array($task->status, [\App\Models\Task::STATUS_REVIEW, \App\Models\Task::STATUS_COMPLETED], true)) {
             return false;
         }
 

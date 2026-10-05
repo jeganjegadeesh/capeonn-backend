@@ -32,6 +32,9 @@ class TimeEntryResource extends JsonResource
             'description' => $this->description,
             'is_manual' => (bool) $this->is_manual,
             'is_running' => (bool) $this->is_running,
+            'is_paused' => (bool) $this->is_paused,
+            'paused_at' => $this->paused_at?->toIso8601String(),
+            'is_auto_stopped' => (bool) $this->is_auto_stopped,
             'created_at' => $this->created_at?->toIso8601String(),
         ];
     }

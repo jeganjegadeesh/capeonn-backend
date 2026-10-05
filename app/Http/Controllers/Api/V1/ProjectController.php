@@ -51,6 +51,7 @@ class ProjectController extends Controller
 
         $query = $this->access->constrainProjects(Project::query(), $actor, 'projects.view')
             ->with(self::WITH)
+            ->with(['tasks' => fn ($q) => $q->select('id', 'project_id', 'parent_task_id', 'status', 'due_date', 'estimated_hours', 'actual_hours')])
             ->withCount(['members'])
             ->when(! $includeArchived, fn ($q) => $q->where('projects.status', '!=', Project::STATUS_ARCHIVED))
             ->when($search !== '', function ($q) use ($search) {

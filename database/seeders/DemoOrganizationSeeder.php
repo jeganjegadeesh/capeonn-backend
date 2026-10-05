@@ -149,7 +149,6 @@ class DemoOrganizationSeeder extends Seeder
                 'deadline' => '2026-11-30',
                 'estimated_hours' => 240,
                 'budget' => 35000,
-                'progress' => 65,
             ]
         );
         $p1->members()->syncWithoutDetaching([
@@ -178,7 +177,6 @@ class DemoOrganizationSeeder extends Seeder
                 'deadline' => '2026-10-15',
                 'estimated_hours' => 120,
                 'budget' => 20000,
-                'progress' => 80,
             ]
         );
         $p2->members()->syncWithoutDetaching([
@@ -205,12 +203,153 @@ class DemoOrganizationSeeder extends Seeder
                 'deadline' => '2026-12-20',
                 'estimated_hours' => 180,
                 'budget' => 45000,
-                'progress' => 15,
             ]
         );
         if ($p3->wasRecentlyCreated || $p3->activities()->count() === 0) {
             $p3->recordActivity('created', "Project created by {$manager->name}", $manager->id);
             $p3->recordActivity('lead_assigned', "{$teamLead->name} assigned as Team Lead by {$manager->name}", $manager->id);
+        }
+
+        // Phase 5 Demo Tasks & Time Entries
+        $emp1 = User::where('email', 'employee1@capeonn.test')->first();
+        $emp2 = User::where('email', 'employee2@capeonn.test')->first();
+
+        // 1. Task: UI Architecture & Tokens (Completed)
+        $t1 = \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'title' => 'Design UI Architecture & Design Tokens'],
+            [
+                'description'     => 'Define color palettes, typography scales, spacing tokens and high-fidelity wireframes.',
+                'status'          => \App\Models\Task::STATUS_COMPLETED,
+                'priority'        => \App\Models\Task::PRIORITY_HIGH,
+                'assigned_to_id'  => $emp2?->id,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->subDays(10)->toDateString(),
+                'estimated_hours' => 16.0,
+                'actual_hours'    => 14.5,
+                'started_at'      => now()->subDays(15),
+                'completed_at'    => now()->subDays(10),
+            ]
+        );
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'parent_task_id' => $t1->id, 'title' => 'Color palette & dark mode tokens'],
+            [
+                'status'          => \App\Models\Task::STATUS_COMPLETED,
+                'priority'        => \App\Models\Task::PRIORITY_MEDIUM,
+                'assigned_to_id'  => $emp2?->id,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->subDays(12)->toDateString(),
+                'estimated_hours' => 8.0,
+                'actual_hours'    => 7.5,
+                'completed_at'    => now()->subDays(12),
+            ]
+        );
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'parent_task_id' => $t1->id, 'title' => 'Component styling guide & Figma sync'],
+            [
+                'status'          => \App\Models\Task::STATUS_COMPLETED,
+                'priority'        => \App\Models\Task::PRIORITY_MEDIUM,
+                'assigned_to_id'  => $emp2?->id,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->subDays(10)->toDateString(),
+                'estimated_hours' => 8.0,
+                'actual_hours'    => 7.0,
+                'completed_at'    => now()->subDays(10),
+            ]
+        );
+
+        // 2. Task: Core Flutter API Client & Riverpod Architecture (In Progress)
+        $t2 = \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'title' => 'API Client & Riverpod Architecture'],
+            [
+                'description'     => 'Build Dio HTTP interceptors, token refresh flow, and StateNotifier providers.',
+                'status'          => \App\Models\Task::STATUS_IN_PROGRESS,
+                'priority'        => \App\Models\Task::PRIORITY_URGENT,
+                'assigned_to_id'  => $emp1?->id,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->addDays(5)->toDateString(),
+                'estimated_hours' => 24.0,
+                'actual_hours'    => 12.0,
+                'started_at'      => now()->subDays(5),
+            ]
+        );
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'parent_task_id' => $t2->id, 'title' => 'Dio interceptor & error handling'],
+            [
+                'status'          => \App\Models\Task::STATUS_COMPLETED,
+                'priority'        => \App\Models\Task::PRIORITY_HIGH,
+                'assigned_to_id'  => $emp1?->id,
+                'created_by_id'   => $teamLead->id,
+                'estimated_hours' => 8.0,
+                'actual_hours'    => 6.0,
+                'completed_at'    => now()->subDays(2),
+            ]
+        );
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'parent_task_id' => $t2->id, 'title' => 'Token refresh & secure storage sync'],
+            [
+                'status'          => \App\Models\Task::STATUS_IN_PROGRESS,
+                'priority'        => \App\Models\Task::PRIORITY_HIGH,
+                'assigned_to_id'  => $emp1?->id,
+                'created_by_id'   => $teamLead->id,
+                'estimated_hours' => 8.0,
+                'actual_hours'    => 6.0,
+            ]
+        );
+
+        // 3. Task: Time Tracking Timer Widget (In Review)
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'title' => 'Task Timer & Background Sync'],
+            [
+                'description'     => 'Start/stop task timer with digital clock ticking and automatic time entry recording.',
+                'status'          => \App\Models\Task::STATUS_REVIEW,
+                'priority'        => \App\Models\Task::PRIORITY_HIGH,
+                'assigned_to_id'  => $emp1?->id,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->addDays(2)->toDateString(),
+                'estimated_hours' => 16.0,
+                'actual_hours'    => 15.0,
+                'started_at'      => now()->subDays(4),
+            ]
+        );
+
+        // 4. Task: Automated Integration Testing (Backlog)
+        \App\Models\Task::firstOrCreate(
+            ['company_id' => $company->id, 'project_id' => $p1->id, 'title' => 'Automated Integration Testing Suite'],
+            [
+                'description'     => 'Write feature tests covering projects, task transitions, timers, and role restrictions.',
+                'status'          => \App\Models\Task::STATUS_BACKLOG,
+                'priority'        => \App\Models\Task::PRIORITY_MEDIUM,
+                'created_by_id'   => $teamLead->id,
+                'due_date'        => now()->addDays(14)->toDateString(),
+                'estimated_hours' => 20.0,
+                'actual_hours'    => 0,
+            ]
+        );
+
+        // Sample Time Entries
+        if ($emp1 && $t2->timeEntries()->count() === 0) {
+            \App\Models\TimeEntry::create([
+                'company_id'       => $company->id,
+                'project_id'       => $p1->id,
+                'task_id'          => $t2->id,
+                'user_id'          => $emp1->id,
+                'started_at'       => now()->subDays(2)->setTime(10, 0),
+                'ended_at'         => now()->subDays(2)->setTime(16, 0),
+                'duration_seconds' => 6 * 3600,
+                'description'      => 'Implemented base Dio client and auth header interceptor.',
+                'is_manual'        => false,
+            ]);
+            \App\Models\TimeEntry::create([
+                'company_id'       => $company->id,
+                'project_id'       => $p1->id,
+                'task_id'          => $t2->id,
+                'user_id'          => $emp1->id,
+                'started_at'       => now()->subDays(1)->setTime(11, 0),
+                'ended_at'         => now()->subDays(1)->setTime(17, 0),
+                'duration_seconds' => 6 * 3600,
+                'description'      => 'Created refresh token retry interceptor and Riverpod notifiers.',
+                'is_manual'        => false,
+            ]);
         }
     }
 

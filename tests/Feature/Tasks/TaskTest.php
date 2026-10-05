@@ -231,8 +231,11 @@ class TaskTest extends TestCase
         $res->assertStatus(422)
             ->assertJsonFragment(['message' => 'Cannot complete task: 1 subtask(s) are still incomplete.']);
 
-        // Now complete the subtask
-        $subtask->update(['status' => Task::STATUS_COMPLETED]);
+        // Now complete the subtask via status endpoint
+        $subRes = $this->postJson("/api/v1/tasks/{$subtask->id}/status", [
+            'status' => Task::STATUS_COMPLETED,
+        ]);
+        $subRes->assertStatus(200)->assertJsonPath('data.status', 'completed');
 
         // Retrying parent completion now succeeds
         $resSuccess = $this->postJson("/api/v1/tasks/{$parent->id}/status", [

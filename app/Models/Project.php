@@ -149,25 +149,27 @@ class Project extends Model
      */
     public function getProgressAttribute(): ?int
     {
-        $total = $this->relationLoaded('tasks') ? $this->tasks->count() : $this->tasks()->count();
+        $tasks = $this->relationLoaded('tasks') ? $this->tasks : $this->tasks()->get();
+        $rootTasks = $tasks->whereNull('parent_task_id');
+        $total = $rootTasks->count();
         if ($total === 0) {
             return null;
         }
 
-        $completed = $this->relationLoaded('tasks')
-            ? $this->tasks->where('status', Task::STATUS_COMPLETED)->count()
-            : $this->tasks()->where('status', Task::STATUS_COMPLETED)->count();
+        $completed = $rootTasks->where('status', Task::STATUS_COMPLETED)->count();
 
         return (int) round(($completed / $total) * 100);
     }
 
     /**
      * Aggregated task metrics for project dashboard and overview.
+     * Counts root tasks only to avoid double-counting subtasks.
      */
     public function getTaskMetricsAttribute(): array
     {
         $tasks = $this->relationLoaded('tasks') ? $this->tasks : $this->tasks()->get();
-        $total = $tasks->count();
+        $rootTasks = $tasks->whereNull('parent_task_id');
+        $total = $rootTasks->count();
 
         if ($total === 0) {
             return [
@@ -183,11 +185,11 @@ class Project extends Model
             ];
         }
 
-        $completed = $tasks->where('status', Task::STATUS_COMPLETED)->count();
-        $inProgress = $tasks->where('status', Task::STATUS_IN_PROGRESS)->count();
-        $review = $tasks->where('status', Task::STATUS_REVIEW)->count();
-        $backlog = $tasks->whereIn('status', [Task::STATUS_BACKLOG, Task::STATUS_ASSIGNED])->count();
-        $overdue = $tasks->filter(fn ($t) => $t->is_overdue)->count();
+        $completed = $rootTasks->where('status', Task::STATUS_COMPLETED)->count();
+        $inProgress = $rootTasks->where('status', Task::STATUS_IN_PROGRESS)->count();
+        $review = $rootTasks->where('status', Task::STATUS_REVIEW)->count();
+        $backlog = $rootTasks->whereIn('status', [Task::STATUS_BACKLOG, Task::STATUS_ASSIGNED])->count();
+        $overdue = $rootTasks->filter(fn ($t) => $t->is_overdue)->count();
 
         return [
             'total_tasks' => $total,

@@ -30,6 +30,12 @@ class Task extends Model
     public const VARIANCE_OVER_TIME = 'over_time';
     public const VARIANCE_NONE = 'none';
 
+    public const DEADLINE_EARLY = 'completed_early';
+    public const DEADLINE_ON_TIME = 'completed_on_time';
+    public const DEADLINE_LATE = 'completed_late';
+    public const DEADLINE_ON_TRACK = 'on_track';
+    public const DEADLINE_OVERDUE = 'overdue';
+
     /** Allowed status lifecycle transitions */
     public const ALLOWED_TRANSITIONS = [
         self::STATUS_BACKLOG          => [self::STATUS_ASSIGNED, self::STATUS_IN_PROGRESS],
@@ -48,6 +54,7 @@ class Task extends Model
         'description',
         'status',
         'priority',
+        'position',
         'assigned_to_id',
         'created_by_id',
         'due_date',
@@ -132,6 +139,11 @@ class Task extends Model
 
     public function getTimeVarianceAttribute(): string
     {
+        // Only classify completed tasks as early, on_time, or over_time
+        if ($this->status !== self::STATUS_COMPLETED) {
+            return self::VARIANCE_NONE;
+        }
+
         if ($this->estimated_hours === null || (float) $this->estimated_hours <= 0) {
             return self::VARIANCE_NONE;
         }
@@ -139,19 +151,44 @@ class Task extends Model
         $est = (float) $this->estimated_hours;
         $act = (float) ($this->actual_hours ?? 0);
 
-        if ($act <= 0 && $this->status !== self::STATUS_COMPLETED) {
-            return self::VARIANCE_NONE;
-        }
+        // Configured tolerance: +/- 10% (0.90 to 1.10)
+        $lowerBound = $est * 0.90;
+        $upperBound = $est * 1.10;
 
-        if ($act < $est) {
+        if ($act < $lowerBound) {
             return self::VARIANCE_EARLY;
         }
 
-        if ($act > $est) {
+        if ($act > $upperBound) {
             return self::VARIANCE_OVER_TIME;
         }
 
         return self::VARIANCE_ON_TIME;
+    }
+
+    public function getDeadlineVarianceAttribute(): string
+    {
+        if ($this->status === self::STATUS_COMPLETED) {
+            if ($this->due_date && $this->completed_at) {
+                $completedDate = $this->completed_at->toDateString();
+                $dueDate = $this->due_date->toDateString();
+
+                if ($completedDate < $dueDate) {
+                    return self::DEADLINE_EARLY;
+                }
+                if ($completedDate > $dueDate) {
+                    return self::DEADLINE_LATE;
+                }
+                return self::DEADLINE_ON_TIME;
+            }
+            return self::DEADLINE_ON_TIME;
+        }
+
+        if ($this->is_overdue) {
+            return self::DEADLINE_OVERDUE;
+        }
+
+        return self::DEADLINE_ON_TRACK;
     }
 
     public function activeTimerFor(int $userId): ?TimeEntry

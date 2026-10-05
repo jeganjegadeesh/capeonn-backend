@@ -128,11 +128,11 @@ class RolePermissionSeeder extends Seeder
             'projects.activity'   => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $asg],
             'projects.status'     => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $asg],
 
-            'tasks.view'          => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $asg],
+            'tasks.view'          => [$sa => $all, $adm => $all, $hr => $asg, $mgr => $dept, $tl => $team, $emp => $self],
             'tasks.manage'        => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $team],
             'tasks.update'        => [$sa => $all, $adm => $all, $mgr => $dept, $tl => $team, $emp => $asg],
 
-            'time.view'           => [$sa => $all, $adm => $all, $hr => $all, $mgr => $dept, $tl => $team, $emp => $self],
+            'time.view'           => [$sa => $all, $adm => $all, $hr => $self, $mgr => $team, $tl => $team, $emp => $self],
             'time.track'          => [$sa => $all, $adm => $all, $mgr => $self, $hr => $self, $tl => $self, $emp => $self],
 
             'chat.use'            => [$sa => $all, $adm => $all, $hr => $all, $mgr => $all, $tl => $all, $emp => $all],

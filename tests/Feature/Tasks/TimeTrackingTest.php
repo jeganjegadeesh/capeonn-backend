@@ -220,15 +220,25 @@ class TimeTrackingTest extends TestCase
         // 1. Task estimated at 5.0h, actual 0h -> none (not completed yet)
         $this->assertEquals('none', $this->task->time_variance);
 
-        // 2. Log 3.0h -> early (3.0 < 5.0)
+        // While task is in_progress, variance is none even if hours logged
         $this->task->update(['actual_hours' => 3.0]);
+        $this->assertEquals('none', $this->task->time_variance);
+
+        // When task is completed:
+        $this->task->update(['status' => Task::STATUS_COMPLETED]);
+
+        // 2. Log 3.0h (less than 90% of 5.0h = 4.5h) -> early
         $this->assertEquals('early', $this->task->time_variance);
 
-        // 3. Log 5.0h -> on_time
+        // 3. Log 4.8h (within +/- 10% tolerance: 4.5h - 5.5h) -> on_time
+        $this->task->update(['actual_hours' => 4.8]);
+        $this->assertEquals('on_time', $this->task->time_variance);
+
+        // 4. Log 5.0h -> on_time
         $this->task->update(['actual_hours' => 5.0]);
         $this->assertEquals('on_time', $this->task->time_variance);
 
-        // 4. Log 7.5h -> over_time
+        // 5. Log 7.5h (more than 110% of 5.0h = 5.5h) -> over_time
         $this->task->update(['actual_hours' => 7.5]);
         $this->assertEquals('over_time', $this->task->time_variance);
     }

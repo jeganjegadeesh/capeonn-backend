@@ -23,6 +23,8 @@ class TimeEntry extends Model
         'duration_seconds',
         'description',
         'is_manual',
+        'is_auto_stopped',
+        'paused_at',
     ];
 
     protected function casts(): array
@@ -30,8 +32,10 @@ class TimeEntry extends Model
         return [
             'started_at' => 'datetime',
             'ended_at' => 'datetime',
+            'paused_at' => 'datetime',
             'duration_seconds' => 'integer',
             'is_manual' => 'boolean',
+            'is_auto_stopped' => 'boolean',
         ];
     }
 
@@ -70,10 +74,16 @@ class TimeEntry extends Model
         return $this->ended_at === null;
     }
 
+    public function getIsPausedAttribute(): bool
+    {
+        return $this->paused_at !== null && $this->ended_at === null;
+    }
+
     public function getDurationHoursAttribute(): float
     {
         if ($this->is_running) {
-            $seconds = (int) $this->started_at->diffInSeconds(now());
+            $effectiveEnd = $this->is_paused ? $this->paused_at : now();
+            $seconds = (int) $this->started_at->diffInSeconds($effectiveEnd);
             return round($seconds / 3600, 2);
         }
 
@@ -83,7 +93,7 @@ class TimeEntry extends Model
     /**
      * Stop a running timer, calculate duration and update task's actual hours.
      */
-    public function stop(?Carbon $endedAt = null): void
+    public function stop(?Carbon $endedAt = null, bool $isAutoStopped = false): void
     {
         if (! $this->is_running) {
             return;
@@ -91,6 +101,7 @@ class TimeEntry extends Model
 
         $endTime = $endedAt ?? now();
         $this->ended_at = $endTime;
+        $this->is_auto_stopped = $isAutoStopped;
         $this->duration_seconds = max(0, (int) $this->started_at->diffInSeconds($endTime));
         $this->save();
 
@@ -101,5 +112,25 @@ class TimeEntry extends Model
                 'actual_hours' => round($totalSeconds / 3600, 2),
             ]);
         }
+    }
+
+    public function pause(?Carbon $pausedAt = null): void
+    {
+        if (! $this->is_running || $this->is_paused) {
+            return;
+        }
+
+        $this->paused_at = $pausedAt ?? now();
+        $this->save();
+    }
+
+    public function resume(): void
+    {
+        if (! $this->is_paused) {
+            return;
+        }
+
+        $this->paused_at = null;
+        $this->save();
     }
 }

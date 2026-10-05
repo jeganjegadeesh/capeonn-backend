@@ -15,6 +15,13 @@ class TaskStatusRequest extends FormRequest
 
     public function rules(): array
     {
+        $routeTask = $this->route('task');
+        $task = $routeTask instanceof Task ? $routeTask : ($routeTask ? Task::find($routeTask) : null);
+        $newStatus = $this->input('status');
+        $isReopening = $task && $task->status === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS;
+        $isChangesRequired = $newStatus === Task::STATUS_CHANGES_REQUIRED;
+        $reasonRequired = $isReopening || $isChangesRequired;
+
         return [
             'status' => [
                 'required', 'string',
@@ -27,7 +34,19 @@ class TaskStatusRequest extends FormRequest
                     Task::STATUS_COMPLETED,
                 ]),
             ],
-            'reason' => ['nullable', 'string', 'max:1000'],
+            'reason' => [
+                $reasonRequired ? 'required' : 'nullable',
+                'string',
+                'min:3',
+                'max:1000',
+            ],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'reason.required' => 'A reason is required when requesting changes or reopening a completed task.',
         ];
     }
 }

@@ -213,4 +213,9 @@ class User extends Authenticatable
     {
         return $this->hasRole(Role::HR);
     }
+
+    public function getAvatarUrlAttribute(): ?string
+    {
+        return null;
+    }
 }

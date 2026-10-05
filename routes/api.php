@@ -202,6 +202,7 @@ Route::prefix('v1')->group(function () {
         // ---- Tasks (Phase 5) ----
         Route::prefix('tasks')->group(function () {
             Route::get('/my', [TaskController::class, 'myTasks'])->middleware('permission:tasks.view');
+            Route::get('/my-work-today', [TaskController::class, 'myWorkToday'])->middleware('permission:tasks.view');
             Route::get('/{task}', [TaskController::class, 'show'])->middleware('permission:tasks.view');
             Route::put('/{task}', [TaskController::class, 'update'])->middleware('permission:tasks.manage');
             Route::delete('/{task}', [TaskController::class, 'destroy'])->middleware('permission:tasks.manage');
@@ -213,14 +214,19 @@ Route::prefix('v1')->group(function () {
             // Timer & manual time entries
             Route::post('/{task}/timer/start', [TimeEntryController::class, 'startTimer'])->middleware('permission:time.track');
             Route::post('/{task}/timer/stop', [TimeEntryController::class, 'stopTimer'])->middleware('permission:time.track');
+            Route::post('/{task}/timer/pause', [TimeEntryController::class, 'pauseTimer'])->middleware('permission:time.track');
+            Route::post('/{task}/timer/resume', [TimeEntryController::class, 'resumeTimer'])->middleware('permission:time.track');
             Route::post('/{task}/time-entries', [TimeEntryController::class, 'storeManual'])->middleware('permission:time.track');
         });
 
-        // ---- Time Entries (Phase 5) ----
+        // ---- Time Entries & Timesheet (Phase 5) ----
         Route::prefix('time-entries')->group(function () {
             Route::get('/', [TimeEntryController::class, 'index'])->middleware('permission:time.view');
             Route::get('/active', [TimeEntryController::class, 'activeTimer'])->middleware('permission:time.track');
             Route::delete('/{entry}', [TimeEntryController::class, 'destroy'])->middleware('permission:time.track');
         });
+
+        Route::get('/timesheet', [TimeEntryController::class, 'timesheet'])->middleware('permission:time.view');
+        Route::get('/timesheet/team', [TimeEntryController::class, 'teamTimesheet'])->middleware('permission:time.view');
     });
 });

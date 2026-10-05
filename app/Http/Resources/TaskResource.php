@@ -27,12 +27,14 @@ class TaskResource extends JsonResource
             'description' => $this->description,
             'status' => $this->status,
             'priority' => $this->priority,
+            'position' => (int) ($this->position ?? 0),
             'due_date' => $this->due_date?->toDateString(),
             'is_overdue' => (bool) $this->is_overdue,
             'days_remaining' => $this->days_remaining,
             'estimated_hours' => $this->estimated_hours !== null ? (float) $this->estimated_hours : null,
             'actual_hours' => (float) ($this->actual_hours ?? 0),
             'time_variance' => $this->time_variance,
+            'deadline_variance' => $this->deadline_variance,
             'started_at' => $this->started_at?->toIso8601String(),
             'completed_at' => $this->completed_at?->toIso8601String(),
             'assigned_to' => $this->whenLoaded('assignedTo', fn () => $this->assignedTo ? [
@@ -54,6 +56,8 @@ class TaskResource extends JsonResource
             'has_active_timer' => $activeTimer !== null,
             'active_timer' => $activeTimer ? [
                 'id' => $activeTimer->id,
+                'is_paused' => (bool) $activeTimer->is_paused,
+                'paused_at' => $activeTimer->paused_at?->toIso8601String(),
                 'started_at' => $activeTimer->started_at?->toIso8601String(),
                 'duration_seconds' => (int) $activeTimer->started_at?->diffInSeconds(now()),
             ] : null,
