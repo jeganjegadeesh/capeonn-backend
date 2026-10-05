@@ -171,6 +171,23 @@ class User extends Authenticatable
         return $this->hasMany(Task::class, 'assigned_to_id');
     }
 
+    public function conversations(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(Conversation::class, 'conversation_participants')
+            ->withPivot(['role', 'last_read_message_id', 'last_read_at', 'is_muted'])
+            ->withTimestamps();
+    }
+
+    public function messages(): HasMany
+    {
+        return $this->hasMany(ChatMessage::class);
+    }
+
+    public function projectFiles(): HasMany
+    {
+        return $this->hasMany(ProjectFile::class, 'uploaded_by_id');
+    }
+
     /**
      * The user's permissions as [slug => scope], e.g. ['employees.view' => 'department'].
      * Load `role.permissions` first to avoid extra queries.

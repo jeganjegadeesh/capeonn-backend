@@ -564,4 +564,151 @@ class AccessControl
 
         return false;
     }
+
+    /**
+     * Phase 6: Constrain conversations accessible to $actor.
+     */
+    public function constrainConversations(Builder $query, User $actor): Builder
+    {
+        if ($actor->company_id === null) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        $query->where('conversations.company_id', $actor->company_id);
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return $query;
+        }
+
+        return $query->where(function ($q) use ($actor) {
+            // Direct or group chats where actor is a participant
+            $q->whereHas('participants', fn ($p) => $p->where('user_id', $actor->id))
+              // Or project chats where actor has project access
+              ->orWhere(function ($projQuery) use ($actor) {
+                  $projQuery->where('conversations.type', \App\Models\Conversation::TYPE_PROJECT)
+                      ->whereHas('project', function ($p) use ($actor) {
+                          $p->where('company_id', $actor->company_id)
+                            ->where(function ($sub) use ($actor) {
+                                if ($actor->department_id !== null) {
+                                    $sub->where('projects.department_id', $actor->department_id);
+                                }
+                                $sub->orWhere('projects.manager_id', $actor->id)
+                                    ->orWhere('projects.team_lead_id', $actor->id)
+                                    ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+                            });
+                      });
+              });
+        });
+    }
+
+    /**
+     * Phase 6: Can actor access a specific conversation?
+     */
+    public function canAccessConversation(User $actor, \App\Models\Conversation $conversation): bool
+    {
+        if ($actor->company_id === null || (int) $conversation->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        if ($conversation->isProject() && $conversation->project) {
+            return $this->canAccessProject($actor, $conversation->project);
+        }
+
+        return $conversation->participants()->where('user_id', $actor->id)->exists();
+    }
+
+    /**
+     * Phase 6: Can actor post a message in this conversation?
+     */
+    public function canPostInConversation(User $actor, \App\Models\Conversation $conversation): bool
+    {
+        if (! $this->canAccessConversation($actor, $conversation)) {
+            return false;
+        }
+
+        if ($conversation->isProject() && $conversation->project) {
+            return $conversation->project->acceptsWork();
+        }
+
+        return true;
+    }
+
+    /**
+     * Phase 6: Can actor manage (rename, add/remove members) this conversation?
+     */
+    public function canManageConversation(User $actor, \App\Models\Conversation $conversation): bool
+    {
+        if ($actor->company_id === null || (int) $conversation->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        if ($conversation->isProject() && $conversation->project) {
+            return $this->canManageProjectTeam($actor, $conversation->project);
+        }
+
+        if ($conversation->isGroup()) {
+            return (int) $conversation->created_by_id === (int) $actor->id
+                || $conversation->participants()
+                    ->where('user_id', $actor->id)
+                    ->where('role', \App\Models\ConversationParticipant::ROLE_ADMIN)
+                    ->exists();
+        }
+
+        return false;
+    }
+
+    /**
+     * Phase 6: Can actor access/view files in this project?
+     */
+    public function canAccessProjectFiles(User $actor, \App\Models\Project $project): bool
+    {
+        return $this->canAccessProject($actor, $project, 'projects.view');
+    }
+
+    /**
+     * Phase 6: Can actor upload a file to this project?
+     */
+    public function canUploadProjectFile(User $actor, \App\Models\Project $project): bool
+    {
+        if (! $project->acceptsWork()) {
+            return false;
+        }
+
+        return $this->canAccessProject($actor, $project, 'projects.view');
+    }
+
+    /**
+     * Phase 6: Can actor delete this project file?
+     */
+    public function canDeleteProjectFile(User $actor, \App\Models\ProjectFile $file): bool
+    {
+        if ($actor->company_id === null || (int) $file->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        // File uploader can delete their own file if project accepts work
+        if ((int) $file->uploaded_by_id === (int) $actor->id && $file->project->acceptsWork()) {
+            return true;
+        }
+
+        // Team Lead of the project
+        if ((int) $file->project->team_lead_id === (int) $actor->id) {
+            return true;
+        }
+
+        // Manager of the project / department
+        return $this->canManageProject($actor, $file->project);
+    }
 }

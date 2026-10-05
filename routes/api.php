@@ -17,6 +17,9 @@ use App\Http\Controllers\Api\V1\OfficeLocationController;
 use App\Http\Controllers\Api\V1\PasswordResetController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\RoleController;
+use App\Http\Controllers\Api\V1\ChatController;
+use App\Http\Controllers\Api\V1\ChatMessageController;
+use App\Http\Controllers\Api\V1\ProjectFileController;
 use App\Http\Controllers\Api\V1\TaskController;
 use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
@@ -30,6 +33,10 @@ Route::pattern('project', '[0-9]+');
 Route::pattern('member', '[0-9]+');
 Route::pattern('task', '[0-9]+');
 Route::pattern('entry', '[0-9]+');
+Route::pattern('conversation', '[0-9]+');
+Route::pattern('message', '[0-9]+');
+Route::pattern('file', '[0-9]+');
+Route::pattern('user', '[0-9]+');
 
 Route::prefix('v1')->group(function () {
 
@@ -197,6 +204,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/{project}/request-completion', [ProjectController::class, 'requestCompletion']);
             Route::post('/{project}/approve-completion', [ProjectController::class, 'approveCompletion']);
             Route::post('/{project}/reject-completion', [ProjectController::class, 'rejectCompletion']);
+
+            // Project files (Phase 6)
+            Route::get('/{project}/files', [ProjectFileController::class, 'index']);
+            Route::post('/{project}/files', [ProjectFileController::class, 'store']);
+            Route::delete('/{project}/files/{file}', [ProjectFileController::class, 'destroy']);
         });
 
         // ---- Tasks (Phase 5) ----
@@ -228,5 +240,26 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/timesheet', [TimeEntryController::class, 'timesheet'])->middleware('permission:time.view');
         Route::get('/timesheet/team', [TimeEntryController::class, 'teamTimesheet'])->middleware('permission:time.view');
+
+        // ---- Internal Chat & Messaging (Phase 6) ----
+        Route::prefix('conversations')->middleware('permission:chat.use')->group(function () {
+            Route::get('/', [ChatController::class, 'index']);
+            Route::get('/unread-summary', [ChatController::class, 'unreadSummary']);
+            Route::get('/search', [ChatMessageController::class, 'search']);
+            Route::post('/direct', [ChatController::class, 'direct']);
+            Route::post('/group', [ChatController::class, 'group']);
+            Route::get('/project/{project}', [ChatController::class, 'forProject']);
+            Route::get('/{conversation}', [ChatController::class, 'show']);
+            Route::put('/{conversation}', [ChatController::class, 'update']);
+            Route::post('/{conversation}/participants', [ChatController::class, 'addParticipants']);
+            Route::delete('/{conversation}/participants/{user}', [ChatController::class, 'removeParticipant']);
+
+            // Messages inside conversation
+            Route::get('/{conversation}/messages', [ChatMessageController::class, 'index']);
+            Route::post('/{conversation}/messages', [ChatMessageController::class, 'store']);
+            Route::post('/{conversation}/read', [ChatMessageController::class, 'markAsRead']);
+            Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing']);
+            Route::delete('/{conversation}/messages/{message}', [ChatMessageController::class, 'destroy']);
+        });
     });
-});
+});

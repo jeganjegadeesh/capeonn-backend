@@ -143,6 +143,16 @@ class Project extends Model
         return $this->hasMany(TimeEntry::class);
     }
 
+    public function files(): HasMany
+    {
+        return $this->hasMany(ProjectFile::class)->orderByDesc('id');
+    }
+
+    public function conversation(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(Conversation::class);
+    }
+
     /**
      * Dynamically computed progress based on completed tasks.
      * Phase 5 requirement: computed from tasks, null if no tasks exist.

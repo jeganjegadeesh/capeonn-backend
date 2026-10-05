@@ -115,6 +115,16 @@ class Task extends Model
         return $this->hasMany(ProjectActivity::class)->orderByDesc('id');
     }
 
+    public function files(): HasMany
+    {
+        return $this->hasMany(ProjectFile::class)->orderByDesc('id');
+    }
+
+    public function messages(): HasMany
+    {
+        return $this->hasMany(ChatMessage::class);
+    }
+
     public function getIsOverdueAttribute(): bool
     {
         if (in_array($this->status, [self::STATUS_COMPLETED], true)) {
