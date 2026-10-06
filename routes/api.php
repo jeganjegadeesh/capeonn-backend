@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\ChatController;
 use App\Http\Controllers\Api\V1\ChatMessageController;
 use App\Http\Controllers\Api\V1\ProjectFileController;
+use App\Http\Controllers\Api\V1\PresenceController;
 use App\Http\Controllers\Api\V1\TaskController;
 use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
@@ -260,6 +261,13 @@ Route::prefix('v1')->group(function () {
             Route::post('/{conversation}/read', [ChatMessageController::class, 'markAsRead']);
             Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing']);
             Route::delete('/{conversation}/messages/{message}', [ChatMessageController::class, 'destroy']);
+        });
+
+        // ---- Live Online / Offline Presence Heartbeat (Phase 6) ----
+        Route::prefix('presence')->group(function () {
+            Route::post('/heartbeat', [PresenceController::class, 'heartbeat']);
+            Route::post('/offline', [PresenceController::class, 'offline']);
+            Route::get('/', [PresenceController::class, 'index']);
         });
 
         // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----

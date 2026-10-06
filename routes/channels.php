@@ -50,3 +50,7 @@ Broadcast::channel('project.{id}', function (User $user, int|string $id) {
 
     return $project->members()->where('user_id', $user->id)->exists();
 }, ['guards' => ['sanctum', 'web']]);
+
+Broadcast::channel('company.{id}', function (User $user, int|string $id) {
+    return (int) $user->company_id === (int) $id;
+}, ['guards' => ['sanctum', 'web']]);

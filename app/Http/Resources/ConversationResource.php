@@ -41,10 +41,23 @@ class ConversationResource extends JsonResource
                         'avatar_url' => $p->user?->avatar_url,
                         'role' => $p->role,
                         'role_slug' => $p->user?->role?->slug,
+                        'is_online' => $p->user ? $p->user->isOnline() : false,
+                        'last_seen_at' => $p->user?->last_seen_at?->toISOString(),
                         'last_read_at' => $p->last_read_at?->toISOString(),
                         'is_muted' => (bool) $p->is_muted,
                     ];
                 });
+            }),
+            'partner' => $this->when($this->isDirect() && $viewer, function () use ($viewer) {
+                $other = $this->users->first(fn ($u) => (int) $u->id !== (int) $viewer->id);
+                if (! $other) return null;
+                return [
+                    'id' => $other->id,
+                    'name' => $other->name,
+                    'avatar_url' => $other->avatar_url,
+                    'is_online' => $other->isOnline(),
+                    'last_seen_at' => $other->last_seen_at?->toISOString(),
+                ];
             }),
             'latest_message' => $this->whenLoaded('latestMessage', function () {
                 if (! $this->latestMessage) return null;

@@ -43,6 +43,7 @@ class User extends Authenticatable
         'is_attendance_applicable',
         'salary',
         'last_login_at',
+        'last_seen_at',
         'dob',
         'gender',
         'address',
@@ -75,11 +76,20 @@ class User extends Authenticatable
             'is_attendance_applicable' => 'boolean',
             'salary' => 'decimal:2',
             'last_login_at' => 'datetime',
+            'last_seen_at' => 'datetime',
             'dob' => 'date',
             'probation_end_date' => 'date',
             'skills' => 'array',
             'certifications' => 'array',
         ];
+    }
+
+    /**
+     * Determine if user is currently online based on heartbeat threshold.
+     */
+    public function isOnline(int $thresholdSeconds = 120): bool
+    {
+        return $this->last_seen_at !== null && $this->last_seen_at->gt(now()->subSeconds($thresholdSeconds));
     }
 
     public function sendPasswordResetNotification($token): void
