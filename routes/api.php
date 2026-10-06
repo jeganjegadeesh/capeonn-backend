@@ -261,5 +261,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing']);
             Route::delete('/{conversation}/messages/{message}', [ChatMessageController::class, 'destroy']);
         });
+
+        // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----
+        Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {
+            return \Illuminate\Support\Facades\Broadcast::auth($request);
+        });
     });
 });

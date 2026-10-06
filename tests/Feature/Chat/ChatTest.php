@@ -304,4 +304,51 @@ class ChatTest extends TestCase
 
         $this->assertSoftDeleted('chat_messages', ['id' => $msgId]);
     }
+
+    public function test_broadcasting_auth_for_conversation_channel(): void
+    {
+        config([
+            'broadcasting.default' => 'pusher',
+            'broadcasting.connections.pusher.key' => 'test-key',
+            'broadcasting.connections.pusher.secret' => 'test-secret',
+            'broadcasting.connections.pusher.app_id' => 'test-id',
+        ]);
+        require base_path('routes/channels.php');
+
+        Sanctum::actingAs($this->user1);
+        $convRes = $this->postJson('/api/v1/conversations/direct', ['user_id' => $this->user2->id]);
+        $convId = $convRes->json('data.id');
+
+        // Alice is a participant -> auth succeeds with pusher signature
+        $authRes = $this->postJson('/api/v1/broadcasting/auth', [
+            'channel_name' => "private-conversation.{$convId}",
+            'socket_id' => '1234.5678',
+        ]);
+        $authRes->assertStatus(200);
+        $this->assertArrayHasKey('auth', $authRes->json());
+        $this->assertStringStartsWith('test-key:', $authRes->json('auth'));
+
+        // Charlie (user3) is NOT a participant in direct chat between Alice and Bob -> 403
+        Sanctum::actingAs($this->user3);
+        $forbiddenRes = $this->postJson('/api/v1/broadcasting/auth', [
+            'channel_name' => "private-conversation.{$convId}",
+            'socket_id' => '1234.5678',
+        ]);
+        $forbiddenRes->assertStatus(403);
+
+        // User channel: Alice can auth for own user channel, not Bob's
+        Sanctum::actingAs($this->user1);
+        $ownUserRes = $this->postJson('/api/v1/broadcasting/auth', [
+            'channel_name' => "private-user.{$this->user1->id}",
+            'socket_id' => '1234.5678',
+        ]);
+        $ownUserRes->assertStatus(200)
+            ->assertJsonPath('auth', fn ($auth) => str_starts_with($auth, 'test-key:'));
+
+        $otherUserRes = $this->postJson('/api/v1/broadcasting/auth', [
+            'channel_name' => "private-user.{$this->user2->id}",
+            'socket_id' => '1234.5678',
+        ]);
+        $otherUserRes->assertStatus(403);
+    }
 }
