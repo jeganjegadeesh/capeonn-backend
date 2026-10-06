@@ -86,6 +86,9 @@ class EmployeeController extends Controller
             'performed_by_id' => $request->user()->id,
         ]);
 
+        // Auto-connect direct chat channels with all active colleagues with inbuild welcome message
+        app(\App\Services\ChatProvisioningService::class)->connectNewEmployeeToAll($user);
+
         return $this->success((new UserResource($user))->resolve(), 'Employee created', 201);
     }
 

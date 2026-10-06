@@ -172,11 +172,25 @@ class AccessControl
     /** Check if an actor can access a specific project with the given permission */
     public function canAccessProject(User $actor, \App\Models\Project $project, string $permission = 'projects.view'): bool
     {
+        if ($actor->company_id === null
+            || (int) $project->company_id !== (int) $actor->company_id) {
+            return false;
+        }
+
+        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return true;
+        }
+
+        // Project members, assigned Team Lead, and assigned Manager always have project access
+        if ((int) $project->team_lead_id === (int) $actor->id
+            || (int) $project->manager_id === (int) $actor->id
+            || $project->members()->where('users.id', $actor->id)->exists()) {
+            return true;
+        }
+
         $scope = $actor->scopeFor($permission);
 
-        if ($scope === null
-            || $actor->company_id === null
-            || (int) $project->company_id !== (int) $actor->company_id) {
+        if ($scope === null) {
             return false;
         }
 
@@ -190,7 +204,8 @@ class AccessControl
                 || (int) $project->manager_id === (int) $actor->id
                 || $project->members()->where('users.id', $actor->id)->exists(),
             Permission::SCOPE_TEAM       => in_array((int) $project->team_lead_id, $this->subordinateIds($actor), true),
-            Permission::SCOPE_SELF       => (int) $project->team_lead_id === (int) $actor->id,
+            Permission::SCOPE_SELF       => (int) $project->team_lead_id === (int) $actor->id
+                || $project->members()->where('users.id', $actor->id)->exists(),
             default                      => false,
         };
     }
@@ -614,11 +629,20 @@ class AccessControl
             return true;
         }
 
-        if ($conversation->isProject() && $conversation->project) {
-            return $this->canAccessProject($actor, $conversation->project);
+        // Direct participants in this conversation always have access
+        if ($conversation->participants()->where('user_id', $actor->id)->exists()) {
+            return true;
         }
 
-        return $conversation->participants()->where('user_id', $actor->id)->exists();
+        // Project discussion channel access
+        if ($conversation->isProject()) {
+            $project = $conversation->project ?? ($conversation->project_id ? \App\Models\Project::find($conversation->project_id) : null);
+            if ($project) {
+                return $this->canAccessProject($actor, $project);
+            }
+        }
+
+        return false;
     }
 
     /**

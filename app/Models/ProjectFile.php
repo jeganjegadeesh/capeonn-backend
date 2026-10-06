@@ -56,7 +56,8 @@ class ProjectFile extends Model
 
     public function getUrlAttribute(): string
     {
-        return Storage::url($this->file_path);
+        $path = Storage::disk('public')->url($this->file_path);
+        return str_starts_with($path, 'http') ? $path : url($path);
     }
 
     public function getFormattedSizeAttribute(): string
