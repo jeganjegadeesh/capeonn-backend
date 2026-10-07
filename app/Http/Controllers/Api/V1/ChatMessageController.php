@@ -47,6 +47,16 @@ class ChatMessageController extends Controller
             return $this->error('You do not have access to this conversation.', 403);
         }
 
+        if ($conversation->isProject() && ! $conversation->participants()->where('user_id', $actor->id)->exists()) {
+            \App\Models\ConversationParticipant::create([
+                'conversation_id' => $conversation->id,
+                'user_id' => $actor->id,
+                'role' => ($actor->id === $conversation->project?->team_lead_id || $actor->id === $conversation->project?->manager_id)
+                    ? \App\Models\ConversationParticipant::ROLE_ADMIN
+                    : \App\Models\ConversationParticipant::ROLE_MEMBER,
+            ]);
+        }
+
         $query = ChatMessage::where('conversation_id', $conversationId)
             ->with([
                 'user:id,name,role_id',
@@ -397,7 +407,71 @@ class ChatMessageController extends Controller
 
         broadcast(new UserTypingEvent($conversationId, $actor, $isTyping));
 
+        // Cache-backed typing status for dual-mode polling fallback
+        $cacheKey = "conv_typing_{$conversationId}";
+        $typingList = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+        if (! is_array($typingList)) {
+            $typingList = [];
+        }
+
+        if ($isTyping) {
+            $typingList[$actor->id] = [
+                'user_id' => $actor->id,
+                'user_name' => $actor->name,
+                'updated_at' => now()->timestamp,
+            ];
+        } else {
+            unset($typingList[$actor->id]);
+        }
+
+        $now = now()->timestamp;
+        $typingList = array_filter($typingList, fn ($item) => ($item['updated_at'] ?? 0) >= $now - 5);
+        \Illuminate\Support\Facades\Cache::put($cacheKey, $typingList, now()->addSeconds(6));
+
         return $this->success(['is_typing' => $isTyping]);
+    }
+
+    /**
+     * Get active partner typing status (HTTP polling fallback).
+     */
+    public function getTyping(Request $request, int $conversationId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
+
+        if (! $this->accessControl->canAccessConversation($actor, $conversation)) {
+            return $this->error('You do not have access to this conversation.', 403);
+        }
+
+        $cacheKey = "conv_typing_{$conversationId}";
+        $typingList = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+        if (! is_array($typingList)) {
+            $typingList = [];
+        }
+
+        $now = now()->timestamp;
+        $activeOtherTyping = null;
+        foreach ($typingList as $userId => $item) {
+            if ((int) $userId !== (int) $actor->id && ($item['updated_at'] ?? 0) >= $now - 4) {
+                $activeOtherTyping = $item;
+                break;
+            }
+        }
+
+        if ($activeOtherTyping) {
+            return $this->success([
+                'conversation_id' => $conversationId,
+                'user_id' => $activeOtherTyping['user_id'],
+                'user_name' => $activeOtherTyping['user_name'],
+                'is_typing' => true,
+            ]);
+        }
+
+        return $this->success([
+            'conversation_id' => $conversationId,
+            'is_typing' => false,
+        ]);
     }
 
     /**

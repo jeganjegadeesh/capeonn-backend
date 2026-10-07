@@ -26,6 +26,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // should produce a 401 JSON response, not a lookup of route('login').
         $middleware->redirectGuestsTo(fn (Request $request) => null);
 
+        $middleware->prepend(\App\Http\Middleware\AuthenticateQueryToken::class);
+
         $middleware->alias([
             'active' => EnsureUserIsActive::class,
             'permission' => EnsureHasPermission::class,

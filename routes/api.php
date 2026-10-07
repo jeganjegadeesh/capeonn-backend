@@ -273,6 +273,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/{conversation}/messages/{message}/pin', [ChatMessageController::class, 'pin']);
             Route::post('/{conversation}/read', [ChatMessageController::class, 'markAsRead']);
             Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing'])->middleware('throttle:60,1');
+            Route::get('/{conversation}/typing', [ChatMessageController::class, 'getTyping']);
             Route::delete('/{conversation}/messages/{message}', [ChatMessageController::class, 'destroy']);
             Route::get('/{conversation}/attachments/{attachment}/download', [ChatMessageController::class, 'downloadAttachment']);
         });

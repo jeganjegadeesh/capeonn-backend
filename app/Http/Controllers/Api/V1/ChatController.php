@@ -297,6 +297,19 @@ class ChatController extends Controller
             return $this->error('You do not have access to this conversation.', 403);
         }
 
+        // If it's a project conversation and actor is authorized but not in participants, ensure they are enrolled
+        if ($conversation->isProject() && ! $conversation->participants->contains('user_id', $actor->id)) {
+            \App\Models\ConversationParticipant::firstOrCreate([
+                'conversation_id' => $conversation->id,
+                'user_id' => $actor->id,
+            ], [
+                'role' => ($actor->id === $conversation->project?->team_lead_id || $actor->id === $conversation->project?->manager_id)
+                    ? \App\Models\ConversationParticipant::ROLE_ADMIN
+                    : \App\Models\ConversationParticipant::ROLE_MEMBER,
+            ]);
+            $conversation->load('participants.user.role');
+        }
+
         return $this->success(
             new ConversationResource($conversation),
             'Conversation details loaded'

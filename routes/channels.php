@@ -24,9 +24,7 @@ Broadcast::channel('conversation.{id}', function ($user, $id) {
         return false;
     }
 
-    return ConversationParticipant::where('conversation_id', $convId)
-        ->where('user_id', $user->id)
-        ->exists();
+    return app(\App\Services\AccessControl::class)->canAccessConversation($user, $conversation);
 }, ['guards' => ['sanctum', 'web']]);
 
 Broadcast::channel('user.{id}', function (User $user, int|string $id) {

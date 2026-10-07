@@ -624,17 +624,33 @@ class AccessControl
             return false;
         }
 
-        // Project discussion channel access: must have project view access
+        // Any conversation where actor is already an explicit participant
+        if ($conversation->participants()->where('user_id', $actor->id)->exists()) {
+            return true;
+        }
+
+        // Project discussion channel access: must have project view access, department match, or task assignment
         if ($conversation->isProject()) {
+            if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+                return true;
+            }
+
             $project = $conversation->project ?? ($conversation->project_id ? \App\Models\Project::find($conversation->project_id) : null);
             if ($project) {
-                return $this->canAccessProject($actor, $project, 'projects.view');
+                if ($this->canAccessProject($actor, $project, 'projects.view')) {
+                    return true;
+                }
+                if ($actor->department_id !== null && (int) $project->department_id === (int) $actor->department_id) {
+                    return true;
+                }
+                if ($project->tasks()->where('assigned_to_id', $actor->id)->exists()) {
+                    return true;
+                }
             }
             return false;
         }
 
-        // Direct and group chats: only explicit participants have access (no silent admin snooping)
-        return $conversation->participants()->where('user_id', $actor->id)->exists();
+        return false;
     }
 
     /**
@@ -646,8 +662,11 @@ class AccessControl
             return false;
         }
 
-        if ($conversation->isProject() && $conversation->project) {
-            return $conversation->project->acceptsWork();
+        if ($conversation->isProject()) {
+            $project = $conversation->project ?? ($conversation->project_id ? \App\Models\Project::find($conversation->project_id) : null);
+            if ($project) {
+                return $project->acceptsWork();
+            }
         }
 
         return true;
