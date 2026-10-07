@@ -86,8 +86,7 @@ class EmployeeController extends Controller
             'performed_by_id' => $request->user()->id,
         ]);
 
-        // Auto-connect direct chat channels with all active colleagues with inbuild welcome message
-        app(\App\Services\ChatProvisioningService::class)->connectNewEmployeeToAll($user);
+        // Direct chats are created on demand via POST /conversations/direct per Phase 6 review.
 
         return $this->success((new UserResource($user))->resolve(), 'Employee created', 201);
     }
@@ -105,9 +104,10 @@ class EmployeeController extends Controller
 
         $target->update($data);
 
-        // Deactivated? Sign them out everywhere right away.
+        // Deactivated? Sign them out everywhere right away and remove from project chats.
         if ($target->wasChanged('is_active') && ! $target->is_active) {
             $target->tokens()->delete();
+            app(\App\Services\ChatProvisioningService::class)->handleUserDeactivated($target);
         }
 
         // System-written history logging
@@ -170,6 +170,7 @@ class EmployeeController extends Controller
         DB::transaction(function () use ($target) {
             Department::where('head_user_id', $target->id)->update(['head_user_id' => null]);
             $target->tokens()->delete();
+            app(\App\Services\ChatProvisioningService::class)->handleUserDeactivated($target);
             $target->delete(); // soft delete: records they created or worked on stay intact
         });
 

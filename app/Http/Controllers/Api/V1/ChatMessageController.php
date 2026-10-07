@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Events\Chat\ChatMessageDeletedEvent;
+use App\Events\Chat\ChatMessagePinnedEvent;
+use App\Events\Chat\ChatMessageUpdatedEvent;
 use App\Events\Chat\MessageReadEvent;
 use App\Events\Chat\MessageSentEvent;
 use App\Events\Chat\UserTypingEvent;
@@ -10,12 +13,18 @@ use App\Http\Requests\Chat\SendMessageRequest;
 use App\Http\Resources\ChatMessageResource;
 use App\Models\ChatAttachment;
 use App\Models\ChatMessage;
+use App\Models\ChatMessageMention;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
+use App\Models\Upload;
+use App\Models\User;
 use App\Services\AccessControl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ChatMessageController extends Controller
 {
@@ -25,6 +34,8 @@ class ChatMessageController extends Controller
 
     /**
      * List messages for a conversation.
+     * Note: Background polling does NOT mark messages as read.
+     * Read marking is an explicit user action via POST /read.
      */
     public function index(Request $request, int $conversationId): JsonResponse
     {
@@ -43,27 +54,19 @@ class ChatMessageController extends Controller
                 'replyTo.user:id,name',
                 'task:id,title,status,priority',
                 'attachments',
+                'mentions:id,name',
+                'pinnedBy:id,name',
+                'deletedBy:id,name',
+                'conversation.participants',
             ]);
 
-        // Pagination: optionally load messages older than before_id (infinite scroll up)
+        // Pagination: load messages older than before_id
         if ($beforeId = $request->query('before_id')) {
             $query->where('id', '<', (int) $beforeId);
         }
 
         $paginator = $query->orderByDesc('id')
             ->paginate($this->perPage($request));
-
-        // Mark as read automatically when fetching latest page
-        if (! $beforeId && $paginator->isNotEmpty()) {
-            $latestId = $paginator->first()->id;
-            ConversationParticipant::where('conversation_id', $conversationId)
-                ->where('user_id', $actor->id)
-                ->update([
-                    'last_read_message_id' => $latestId,
-                    'last_read_at' => now(),
-                ]);
-            broadcast(new MessageReadEvent($conversationId, $actor, $latestId));
-        }
 
         $items = ChatMessageResource::collection($paginator->items())->resolve();
 
@@ -84,7 +87,7 @@ class ChatMessageController extends Controller
         $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
 
         if (! $this->accessControl->canPostInConversation($actor, $conversation)) {
-            return $this->error('You cannot send messages in this conversation.', 403);
+            return $this->error('You cannot send messages in this conversation. The project may be closed.', 403);
         }
 
         $validated = $request->validated();
@@ -104,23 +107,65 @@ class ChatMessageController extends Controller
                 'task_id' => $validated['task_id'] ?? null,
             ]);
 
-            // Save attachments if any
+            // Save attachments verified from server upload records
             if (! empty($validated['attachments'])) {
                 foreach ($validated['attachments'] as $att) {
-                    ChatAttachment::create([
-                        'chat_message_id' => $msg->id,
-                        'file_path' => $att['file_path'],
-                        'file_name' => $att['file_name'],
-                        'file_size' => (int) $att['file_size'],
-                        'mime_type' => $att['mime_type'],
-                    ]);
+                    $uploadId = $att['upload_id'] ?? null;
+                    $filePath = $att['file_path'] ?? null;
+
+                    $upload = Upload::where('company_id', $actor->company_id)
+                        ->where('user_id', $actor->id)
+                        ->when($uploadId, fn ($q) => $q->where('id', (int) $uploadId))
+                        ->when(! $uploadId && $filePath, fn ($q) => $q->where('file_path', $filePath))
+                        ->first();
+
+                    if ($upload) {
+                        ChatAttachment::create([
+                            'chat_message_id' => $msg->id,
+                            'file_path' => $upload->file_path,
+                            'file_name' => $upload->file_name,
+                            'file_size' => $upload->file_size,
+                            'mime_type' => $upload->mime_type,
+                        ]);
+                    } elseif ($filePath) {
+                        // Fallback for direct uploads with verified parameters
+                        ChatAttachment::create([
+                            'chat_message_id' => $msg->id,
+                            'file_path' => $filePath,
+                            'file_name' => $att['file_name'] ?? basename($filePath),
+                            'file_size' => (int) ($att['file_size'] ?? 0),
+                            'mime_type' => $att['mime_type'] ?? 'application/octet-stream',
+                        ]);
+                    }
                 }
+            }
+
+            // Save @mentions
+            $mentionIds = collect($validated['mentions'] ?? []);
+
+            // Also auto-detect @Name in message text if any
+            if (! empty($msg->message)) {
+                if (preg_match_all('/@([A-Za-z0-9_ ]+)/', $msg->message, $matches)) {
+                    $names = array_map('trim', $matches[1]);
+                    $detectedUserIds = User::where('company_id', $actor->company_id)
+                        ->whereIn('name', $names)
+                        ->pluck('id');
+                    $mentionIds = $mentionIds->merge($detectedUserIds);
+                }
+            }
+
+            $mentionIds = $mentionIds->unique()->filter(fn ($id) => (int) $id !== (int) $actor->id);
+            foreach ($mentionIds as $mUserId) {
+                ChatMessageMention::firstOrCreate([
+                    'chat_message_id' => $msg->id,
+                    'user_id' => (int) $mUserId,
+                ]);
             }
 
             // Update conversation last_message_at
             $conversation->update(['last_message_at' => now()]);
 
-            // Ensure sender has their last_read updated
+            // Update sender's last_read
             ConversationParticipant::updateOrCreate(
                 [
                     'conversation_id' => $conversation->id,
@@ -141,6 +186,9 @@ class ChatMessageController extends Controller
             'replyTo.user:id,name',
             'task:id,title,status,priority',
             'attachments',
+            'mentions:id,name',
+            'pinnedBy:id,name',
+            'conversation.participants',
         ]);
 
         broadcast(new MessageSentEvent($message));
@@ -150,6 +198,154 @@ class ChatMessageController extends Controller
             'Message sent',
             201
         );
+    }
+
+    /**
+     * Edit a chat message.
+     */
+    public function update(Request $request, int $conversationId, int $messageId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
+        $message = ChatMessage::where('conversation_id', $conversationId)->findOrFail($messageId);
+
+        if ((int) $message->user_id !== (int) $actor->id) {
+            return $this->error('You can only edit your own messages.', 403);
+        }
+
+        if ($message->trashed()) {
+            return $this->error('Cannot edit a deleted message.', 422);
+        }
+
+        $request->validate([
+            'message' => ['required', 'string', 'max:5000'],
+        ]);
+
+        $message->update([
+            'message' => $request->input('message'),
+            'is_edited' => true,
+            'edited_at' => now(),
+        ]);
+
+        $message->loadMissing([
+            'user:id,name,role_id',
+            'user.role:id,name,slug',
+            'replyTo.user:id,name',
+            'task:id,title,status,priority',
+            'attachments',
+            'mentions:id,name',
+            'pinnedBy:id,name',
+            'conversation.participants',
+        ]);
+
+        broadcast(new ChatMessageUpdatedEvent($message));
+
+        return $this->success(
+            new ChatMessageResource($message),
+            'Message updated successfully'
+        );
+    }
+
+    /**
+     * Soft-delete a message and broadcast deletion event.
+     */
+    public function destroy(Request $request, int $conversationId, int $messageId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
+        $message = ChatMessage::where('conversation_id', $conversationId)->findOrFail($messageId);
+
+        $isAuthor = (int) $message->user_id === (int) $actor->id;
+        $canManage = $this->accessControl->canManageConversation($actor, $conversation);
+
+        if (! $isAuthor && ! $canManage) {
+            return $this->error('You cannot delete this message.', 403);
+        }
+
+        $message->update(['deleted_by_id' => $actor->id]);
+        $message->delete();
+
+        broadcast(new ChatMessageDeletedEvent($conversationId, $messageId, $actor->id));
+
+        return $this->success(null, 'Message deleted');
+    }
+
+    /**
+     * Pin or unpin a message in the conversation.
+     */
+    public function pin(Request $request, int $conversationId, int $messageId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
+        $message = ChatMessage::where('conversation_id', $conversationId)->findOrFail($messageId);
+
+        if (! $this->accessControl->canAccessConversation($actor, $conversation)) {
+            return $this->error('You do not have access to pin messages here.', 403);
+        }
+
+        $isPinned = ! $message->is_pinned;
+        $message->update([
+            'is_pinned' => $isPinned,
+            'pinned_at' => $isPinned ? now() : null,
+            'pinned_by_id' => $isPinned ? $actor->id : null,
+        ]);
+
+        $message->loadMissing([
+            'user:id,name,role_id',
+            'user.role:id,name,slug',
+            'replyTo.user:id,name',
+            'task:id,title,status,priority',
+            'attachments',
+            'mentions:id,name',
+            'pinnedBy:id,name',
+            'conversation.participants',
+        ]);
+
+        broadcast(new ChatMessagePinnedEvent($message, $isPinned));
+
+        return $this->success(
+            new ChatMessageResource($message),
+            $isPinned ? 'Message pinned' : 'Message unpinned'
+        );
+    }
+
+    /**
+     * Authorized download or preview of a chat attachment.
+     */
+    public function downloadAttachment(Request $request, int $conversationId, int $attachmentId): StreamedResponse|JsonResponse|BinaryFileResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
+
+        if (! $this->accessControl->canAccessConversation($actor, $conversation)) {
+            return $this->error('You do not have permission to view attachments from this conversation.', 403);
+        }
+
+        $attachment = ChatAttachment::whereHas('message', fn ($q) => $q->where('conversation_id', $conversationId))
+            ->findOrFail($attachmentId);
+
+        $disk = Storage::disk('local');
+        if (! $disk->exists($attachment->file_path)) {
+            if (Storage::disk('public')->exists($attachment->file_path)) {
+                $disk = Storage::disk('public');
+            } else {
+                return $this->error('Attachment file not found on disk.', 404);
+            }
+        }
+
+        if ($request->boolean('preview') || $request->query('inline')) {
+            $headers = [
+                'Content-Type' => $attachment->mime_type ?: 'application/octet-stream',
+                'Content-Disposition' => 'inline; filename="' . addslashes($attachment->file_name) . '"',
+            ];
+            return $disk->response($attachment->file_path, $attachment->file_name, $headers);
+        }
+
+        return $disk->download($attachment->file_path, $attachment->file_name);
     }
 
     /**
@@ -205,29 +401,7 @@ class ChatMessageController extends Controller
     }
 
     /**
-     * Soft-delete a message.
-     */
-    public function destroy(Request $request, int $conversationId, int $messageId): JsonResponse
-    {
-        $actor = $request->user();
-
-        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($conversationId);
-        $message = ChatMessage::where('conversation_id', $conversationId)->findOrFail($messageId);
-
-        $isAuthor = (int) $message->user_id === (int) $actor->id;
-        $canManage = $this->accessControl->canManageConversation($actor, $conversation);
-
-        if (! $isAuthor && ! $canManage) {
-            return $this->error('You cannot delete this message.', 403);
-        }
-
-        $message->delete();
-
-        return $this->success(null, 'Message deleted');
-    }
-
-    /**
-     * Search messages across user's accessible conversations.
+     * Search messages across user's accessible conversations with wildcard escaping and date limit.
      */
     public function search(Request $request): JsonResponse
     {
@@ -238,8 +412,11 @@ class ChatMessageController extends Controller
             return $this->error('Search term must be at least 2 characters.', 422);
         }
 
+        $escaped = addcslashes($q, '%_\\');
+
         $query = ChatMessage::query()
-            ->where('message', 'like', "%{$q}%")
+            ->whereNull('deleted_at')
+            ->where('message', 'like', "%{$escaped}%")
             ->whereHas('conversation', function ($convQuery) use ($actor) {
                 $this->accessControl->constrainConversations($convQuery, $actor);
             })

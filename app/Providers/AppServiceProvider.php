@@ -48,5 +48,9 @@ class AppServiceProvider extends ServiceProvider
         \Illuminate\Support\Facades\Event::listen(\App\Events\Tasks\TaskReopenedEvent::class, [\App\Listeners\TaskNotificationListener::class, 'handleTaskReopened']);
         \Illuminate\Support\Facades\Event::listen(\App\Events\Tasks\TaskOverdueEvent::class, [\App\Listeners\TaskNotificationListener::class, 'handleTaskOverdue']);
         \Illuminate\Support\Facades\Event::listen(\App\Events\Tasks\TaskDueSoonEvent::class, [\App\Listeners\TaskNotificationListener::class, 'handleTaskDueSoon']);
+
+        // Phase 6 Chat & File Listeners
+        \Illuminate\Support\Facades\Event::listen(\App\Events\Projects\ProjectFileUploadedEvent::class, [\App\Listeners\ProjectNotificationListener::class, 'handleProjectFileUploaded']);
+        \Illuminate\Support\Facades\Event::listen(\App\Events\Chat\MessageSentEvent::class, [\App\Listeners\ChatNotificationListener::class, 'handleMessageSent']);
     }
 }

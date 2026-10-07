@@ -31,8 +31,10 @@ class ProjectFileTest extends TestCase
     {
         parent::setUp();
 
-        $this->seed(RolePermissionSeeder::class);
+        Storage::fake('local');
         Storage::fake('public');
+
+        $this->seed(RolePermissionSeeder::class);
 
         $this->company = Company::create(['name' => 'Capeonn Systems', 'code' => 'SYS']);
         $this->department = Department::create(['company_id' => $this->company->id, 'name' => 'Design', 'code' => 'DSN']);

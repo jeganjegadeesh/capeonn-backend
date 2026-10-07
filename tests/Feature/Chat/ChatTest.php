@@ -216,6 +216,15 @@ class ChatTest extends TestCase
         $convRes = $this->postJson('/api/v1/conversations/direct', ['user_id' => $this->user2->id]);
         $convId = $convRes->json('data.id');
 
+        \App\Models\Upload::create([
+            'company_id' => $this->company->id,
+            'user_id' => $this->user1->id,
+            'file_path' => 'uploads/spec.pdf',
+            'file_name' => 'spec.pdf',
+            'file_size' => 102400,
+            'mime_type' => 'application/pdf',
+        ]);
+
         $sendRes = $this->postJson("/api/v1/conversations/{$convId}/messages", [
             'message' => 'Here are the design assets for the task',
             'task_id' => $task->id,

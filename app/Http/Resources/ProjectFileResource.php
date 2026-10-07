@@ -20,8 +20,12 @@ class ProjectFileResource extends JsonResource
             'formatted_size' => $this->formatted_size,
             'mime_type' => $this->mime_type,
             'category' => $this->category,
+            'version' => (int) ($this->version ?? 1),
             'description' => $this->description,
             'url' => $this->url,
+            'download_url' => $this->download_url,
+            'preview_url' => $this->preview_url,
+            'thumbnail_url' => str_starts_with($this->mime_type ?? '', 'image/') ? $this->preview_url : null,
             'uploader' => [
                 'id' => $this->uploader?->id,
                 'name' => $this->uploader?->name,

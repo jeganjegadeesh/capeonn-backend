@@ -5,20 +5,26 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Chat\CreateDirectConversationRequest;
 use App\Http\Requests\Chat\CreateGroupConversationRequest;
+use App\Http\Resources\ChatMessageResource;
 use App\Http\Resources\ConversationResource;
+use App\Models\ChatMessage;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
 use App\Models\Project;
+use App\Models\Task;
 use App\Models\User;
 use App\Services\AccessControl;
+use App\Services\ChatProvisioningService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ChatController extends Controller
 {
-    public function __construct(private readonly AccessControl $accessControl)
-    {
+    public function __construct(
+        private readonly AccessControl $accessControl,
+        private readonly ChatProvisioningService $chatProvisioningService
+    ) {
     }
 
     /**
@@ -32,18 +38,20 @@ class ChatController extends Controller
             ->with([
                 'project:id,name,code,status',
                 'createdBy:id,name',
-                'participants.user:id,name,role_id',
+                'participants.user:id,name,role_id,last_seen_at',
                 'participants.user.role:id,name,slug',
                 'latestMessage.user:id,name',
+                'latestMessage.attachments',
             ]);
 
         $this->accessControl->constrainConversations($query, $user);
 
         if ($search = $request->query('search')) {
-            $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%")
-                  ->orWhereHas('users', fn ($u) => $u->where('name', 'like', "%{$search}%"))
-                  ->orWhereHas('project', fn ($p) => $p->where('name', 'like', "%{$search}%"));
+            $escaped = addcslashes($search, '%_\\');
+            $query->where(function ($q) use ($escaped) {
+                $q->where('title', 'like', "%{$escaped}%")
+                  ->orWhereHas('users', fn ($u) => $u->where('name', 'like', "%{$escaped}%"))
+                  ->orWhereHas('project', fn ($p) => $p->where('name', 'like', "%{$escaped}%"));
             });
         }
 
@@ -51,7 +59,6 @@ class ChatController extends Controller
             $query->where('type', $type);
         }
 
-        // Order by latest activity first, then newly created
         $paginator = $query->orderByRaw('COALESCE(last_message_at, created_at) DESC')
             ->paginate($this->perPage($request));
 
@@ -66,6 +73,7 @@ class ChatController extends Controller
 
     /**
      * Start or fetch an existing direct conversation with another employee.
+     * Prevents race conditions and duplicate chats using atomic locks.
      */
     public function direct(CreateDirectConversationRequest $request): JsonResponse
     {
@@ -76,27 +84,20 @@ class ChatController extends Controller
             ->where('is_active', true)
             ->findOrFail($otherUserId);
 
-        // Find existing 1-on-1 direct conversation between these two users
-        $existing = Conversation::where('company_id', $actor->company_id)
-            ->where('type', Conversation::TYPE_DIRECT)
-            ->whereHas('participants', fn ($q) => $q->where('user_id', $actor->id))
-            ->whereHas('participants', fn ($q) => $q->where('user_id', $targetUser->id))
-            ->first();
-
-        if ($existing) {
-            $existing->loadMissing([
-                'participants.user.role',
-                'latestMessage.user',
-            ]);
-
-            return $this->success(
-                new ConversationResource($existing),
-                'Direct conversation retrieved'
-            );
-        }
-
-        // Create new direct conversation
         $conversation = DB::transaction(function () use ($actor, $targetUser) {
+            // Find existing direct conversation inside transaction
+            $existing = Conversation::where('company_id', $actor->company_id)
+                ->where('type', Conversation::TYPE_DIRECT)
+                ->whereHas('participants', fn ($q) => $q->where('user_id', $actor->id))
+                ->whereHas('participants', fn ($q) => $q->where('user_id', $targetUser->id))
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing) {
+                return $existing;
+            }
+
+            // Create new direct conversation
             $conv = Conversation::create([
                 'company_id' => $actor->company_id,
                 'type' => Conversation::TYPE_DIRECT,
@@ -125,8 +126,8 @@ class ChatController extends Controller
 
         return $this->success(
             new ConversationResource($conversation),
-            'Direct conversation created',
-            201
+            'Direct conversation ready',
+            $conversation->wasRecentlyCreated ? 201 : 200
         );
     }
 
@@ -144,7 +145,10 @@ class ChatController extends Controller
             ->unique()
             ->values();
 
-        // Verify all participants belong to the same company
+        if ($participantIds->count() > 100) {
+            return $this->error('Group conversations cannot exceed 100 participants.', 422);
+        }
+
         $validCount = User::where('company_id', $actor->company_id)
             ->where('is_active', true)
             ->whereIn('id', $participantIds)
@@ -159,6 +163,8 @@ class ChatController extends Controller
                 'company_id' => $actor->company_id,
                 'type' => Conversation::TYPE_GROUP,
                 'title' => $validated['title'],
+                'allow_member_invites' => $validated['allow_member_invites'] ?? true,
+                'max_participants' => 100,
                 'created_by_id' => $actor->id,
             ]);
 
@@ -190,6 +196,7 @@ class ChatController extends Controller
 
     /**
      * Get or create the dedicated discussion channel for a Project.
+     * Does NOT permanently bind observers who only view.
      */
     public function forProject(Request $request, int $projectId): JsonResponse
     {
@@ -216,29 +223,8 @@ class ChatController extends Controller
             ]
         );
 
-        // Sync participants from project members + lead + manager + current user
-        $participantIds = collect();
-        if ($project->team_lead_id) $participantIds->push((int) $project->team_lead_id);
-        if ($project->manager_id) $participantIds->push((int) $project->manager_id);
-        foreach ($project->members as $m) {
-            $participantIds->push((int) $m->id);
-        }
-        $participantIds->push((int) $actor->id);
-        $participantIds = $participantIds->unique()->values();
-
-        foreach ($participantIds as $userId) {
-            ConversationParticipant::firstOrCreate(
-                [
-                    'conversation_id' => $conversation->id,
-                    'user_id' => $userId,
-                ],
-                [
-                    'role' => ($userId === (int) $project->team_lead_id || $userId === (int) $project->manager_id)
-                        ? ConversationParticipant::ROLE_ADMIN
-                        : ConversationParticipant::ROLE_MEMBER,
-                ]
-            );
-        }
+        // Synchronize participants strictly with active members, lead, manager
+        $this->chatProvisioningService->syncProjectParticipants($project);
 
         $conversation->loadMissing([
             'project:id,name,code,status',
@@ -279,7 +265,7 @@ class ChatController extends Controller
     }
 
     /**
-     * Update conversation (group title).
+     * Update conversation settings (group title, avatar, invite permissions).
      */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -291,17 +277,23 @@ class ChatController extends Controller
             return $this->error('You do not have permission to manage this conversation.', 403);
         }
 
-        $request->validate([
-            'title' => ['required', 'string', 'max:255'],
+        $validated = $request->validate([
+            'title' => ['nullable', 'string', 'max:255'],
+            'avatar_url' => ['nullable', 'string', 'max:2048'],
+            'allow_member_invites' => ['nullable', 'boolean'],
+            'max_participants' => ['nullable', 'integer', 'min:2', 'max:500'],
         ]);
 
-        $conversation->update([
-            'title' => $request->input('title'),
-        ]);
+        $conversation->update(array_filter([
+            'title' => $validated['title'] ?? null,
+            'avatar_url' => $validated['avatar_url'] ?? null,
+            'allow_member_invites' => $validated['allow_member_invites'] ?? null,
+            'max_participants' => $validated['max_participants'] ?? null,
+        ], fn ($val) => $val !== null));
 
         return $this->success(
             new ConversationResource($conversation->fresh(['participants.user.role', 'latestMessage.user'])),
-            'Conversation updated'
+            'Conversation updated successfully'
         );
     }
 
@@ -314,8 +306,15 @@ class ChatController extends Controller
 
         $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
 
-        if (! $this->accessControl->canManageConversation($actor, $conversation)) {
-            return $this->error('You do not have permission to add members.', 403);
+        $isParticipant = $conversation->participants()->where('user_id', $actor->id)->exists();
+        $isAdmin = $conversation->participants()
+            ->where('user_id', $actor->id)
+            ->where('role', ConversationParticipant::ROLE_ADMIN)
+            ->exists();
+
+        // Check if invites are allowed or actor is admin
+        if (! $isAdmin && (! $conversation->allow_member_invites || ! $isParticipant)) {
+            return $this->error('Only group administrators can add new members.', 403);
         }
 
         $request->validate([
@@ -324,8 +323,13 @@ class ChatController extends Controller
         ]);
 
         $newIds = collect($request->input('participant_ids'))->unique();
+        $currentCount = $conversation->participants()->count();
+        $maxAllowed = $conversation->max_participants ?: 100;
 
-        // Verify company
+        if ($currentCount + $newIds->count() > $maxAllowed) {
+            return $this->error("Cannot exceed maximum group limit of {$maxAllowed} members.", 422);
+        }
+
         $validUsers = User::where('company_id', $actor->company_id)
             ->where('is_active', true)
             ->whereIn('id', $newIds)
@@ -345,12 +349,12 @@ class ChatController extends Controller
 
         return $this->success(
             new ConversationResource($conversation->fresh(['participants.user.role', 'latestMessage.user'])),
-            'Participants added'
+            'Participants added successfully'
         );
     }
 
     /**
-     * Remove participant or leave conversation.
+     * Remove a participant from a group conversation.
      */
     public function removeParticipant(Request $request, int $id, int $userId): JsonResponse
     {
@@ -365,11 +369,120 @@ class ChatController extends Controller
             return $this->error('You do not have permission to remove this participant.', 403);
         }
 
+        if ($isSelf) {
+            return $this->leave($request, $id);
+        }
+
         ConversationParticipant::where('conversation_id', $conversation->id)
             ->where('user_id', $userId)
             ->delete();
 
-        return $this->success(null, $isSelf ? 'You left the conversation' : 'Participant removed');
+        return $this->success(null, 'Participant removed successfully');
+    }
+
+    /**
+     * Leave group conversation with automatic admin transfer if creator/admin leaves.
+     */
+    public function leave(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
+
+        if ($conversation->isDirect()) {
+            return $this->error('You cannot leave a direct conversation.', 422);
+        }
+
+        if ($conversation->isProject()) {
+            return $this->error('Project discussion channels are tied to project membership.', 422);
+        }
+
+        $participant = ConversationParticipant::where('conversation_id', $conversation->id)
+            ->where('user_id', $actor->id)
+            ->first();
+
+        if (! $participant) {
+            return $this->error('You are not a participant in this conversation.', 404);
+        }
+
+        // If the leaving user is an admin, transfer admin if other members exist
+        if ($participant->isAdmin()) {
+            $otherParticipants = ConversationParticipant::where('conversation_id', $conversation->id)
+                ->where('user_id', '!=', $actor->id)
+                ->get();
+
+            if ($otherParticipants->isNotEmpty()) {
+                $hasOtherAdmin = $otherParticipants->contains(fn ($p) => $p->isAdmin());
+                if (! $hasOtherAdmin) {
+                    $otherParticipants->first()->update(['role' => ConversationParticipant::ROLE_ADMIN]);
+                }
+            }
+        }
+
+        $participant->delete();
+
+        return $this->success(null, 'You have left the conversation');
+    }
+
+    /**
+     * Mute or unmute notifications for a conversation.
+     */
+    public function mute(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
+
+        $participant = ConversationParticipant::where('conversation_id', $conversation->id)
+            ->where('user_id', $actor->id)
+            ->first();
+
+        if (! $participant) {
+            return $this->error('You are not a participant in this conversation.', 403);
+        }
+
+        $isMuted = $request->has('is_muted')
+            ? $request->boolean('is_muted')
+            : ! $participant->is_muted;
+
+        $participant->update(['is_muted' => $isMuted]);
+
+        return $this->success([
+            'conversation_id' => $conversation->id,
+            'is_muted' => $isMuted,
+        ], $isMuted ? 'Conversation muted' : 'Conversation unmuted');
+    }
+
+    /**
+     * Get chat messages linked to a specific task.
+     */
+    public function taskMessages(Request $request, int $taskId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $task = Task::where('company_id', $actor->company_id)->findOrFail($taskId);
+
+        if (! $this->accessControl->canAccessTask($actor, $task)) {
+            return $this->error('You do not have access to this task.', 403);
+        }
+
+        $query = ChatMessage::where('task_id', $task->id)
+            ->whereHas('conversation', function ($convQuery) use ($actor) {
+                $this->accessControl->constrainConversations($convQuery, $actor);
+            })
+            ->with([
+                'user.role',
+                'replyTo.user',
+                'task:id,title,status,priority',
+                'attachments',
+                'mentions',
+                'pinnedBy',
+            ]);
+
+        $paginator = $query->orderByDesc('id')->paginate($this->perPage($request));
+        $items = ChatMessageResource::collection($paginator->items())->resolve();
+
+        return $this->paginated($paginator, $items, 'Task messages loaded');
     }
 
     /**

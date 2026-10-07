@@ -411,6 +411,8 @@ class ProjectController extends Controller
             }
         });
 
+        app(\App\Services\ChatProvisioningService::class)->syncProjectParticipants($record);
+
         $record->load([
             'department:id,name,code',
             'manager:id,name',
@@ -475,6 +477,8 @@ class ProjectController extends Controller
 
             event(new ProjectStatusChangedEvent($record, $oldStatus, $newStatus, $reason, $actor));
         });
+
+        app(\App\Services\ChatProvisioningService::class)->syncProjectParticipants($record);
 
         $record->load([
             'department:id,name,code',
@@ -697,6 +701,8 @@ class ProjectController extends Controller
                         reason: 'Retained as member upon lead reassignment'
                     );
                 }
+            } elseif ($oldLeadId && ! $keepAsMember) {
+                $record->members()->detach($oldLeadId);
             }
 
             if ($leadId) {
@@ -730,6 +736,8 @@ class ProjectController extends Controller
                 );
             }
         });
+
+        app(\App\Services\ChatProvisioningService::class)->syncProjectParticipants($record);
 
         $record->load([
             'department:id,name,code',
@@ -829,6 +837,8 @@ class ProjectController extends Controller
             event(new ProjectMemberAddedEvent($record, $user, $projectRole, $actor));
         });
 
+        app(\App\Services\ChatProvisioningService::class)->syncProjectParticipants($record);
+
         $record->load([
             'department:id,name,code',
             'manager:id,name',
@@ -923,6 +933,8 @@ class ProjectController extends Controller
                 event(new ProjectMemberRemovedEvent($record, $user, $actor));
             }
         });
+
+        app(\App\Services\ChatProvisioningService::class)->syncProjectParticipants($record);
 
         return $this->success(null, 'Member removed from project');
     }

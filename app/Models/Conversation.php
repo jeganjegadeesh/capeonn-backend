@@ -22,6 +22,9 @@ class Conversation extends Model
         'company_id',
         'type',
         'title',
+        'avatar_url',
+        'allow_member_invites',
+        'max_participants',
         'project_id',
         'created_by_id',
         'last_message_at',
@@ -31,6 +34,8 @@ class Conversation extends Model
     {
         return [
             'last_message_at' => 'datetime',
+            'allow_member_invites' => 'boolean',
+            'max_participants' => 'integer',
         ];
     }
 

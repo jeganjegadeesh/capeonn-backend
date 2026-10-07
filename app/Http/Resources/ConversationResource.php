@@ -15,7 +15,11 @@ class ConversationResource extends JsonResource
             'id' => $this->id,
             'type' => $this->type,
             'title' => $this->title,
+            'avatar_url' => $this->avatar_url,
+            'allow_member_invites' => (bool) $this->allow_member_invites,
+            'max_participants' => (int) ($this->max_participants ?? 100),
             'display_name' => $viewer ? $this->displayNameFor($viewer) : ($this->title ?? 'Chat'),
+            'is_muted' => $viewer ? (bool) ($this->participants?->firstWhere('user_id', $viewer->id)?->is_muted ?? false) : false,
             'project_id' => $this->project_id,
             'project' => $this->whenLoaded('project', function () {
                 if (! $this->project) return null;

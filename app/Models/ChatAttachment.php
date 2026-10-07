@@ -19,7 +19,7 @@ class ChatAttachment extends Model
         'mime_type',
     ];
 
-    protected $appends = ['url'];
+    protected $appends = ['url', 'download_url', 'preview_url'];
 
     public function message(): BelongsTo
     {
@@ -28,7 +28,20 @@ class ChatAttachment extends Model
 
     public function getUrlAttribute(): string
     {
-        $path = Storage::disk('public')->url($this->file_path);
-        return str_starts_with($path, 'http') ? $path : url($path);
+        $convId = $this->message?->conversation_id;
+        if ($convId) {
+            return url("/api/v1/conversations/{$convId}/attachments/{$this->id}/download");
+        }
+        return url("/api/v1/attachments/{$this->id}/download");
+    }
+
+    public function getDownloadUrlAttribute(): string
+    {
+        return $this->getUrlAttribute();
+    }
+
+    public function getPreviewUrlAttribute(): string
+    {
+        return $this->getUrlAttribute() . '?preview=1';
     }
 }

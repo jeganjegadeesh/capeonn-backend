@@ -591,12 +591,8 @@ class AccessControl
 
         $query->where('conversations.company_id', $actor->company_id);
 
-        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
-            return $query;
-        }
-
         return $query->where(function ($q) use ($actor) {
-            // Direct or group chats where actor is a participant
+            // Direct or group chats where actor is an explicit participant
             $q->whereHas('participants', fn ($p) => $p->where('user_id', $actor->id))
               // Or project chats where actor has project access
               ->orWhere(function ($projQuery) use ($actor) {
@@ -604,6 +600,9 @@ class AccessControl
                       ->whereHas('project', function ($p) use ($actor) {
                           $p->where('company_id', $actor->company_id)
                             ->where(function ($sub) use ($actor) {
+                                if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+                                    return; // Admins have project access across company
+                                }
                                 if ($actor->department_id !== null) {
                                     $sub->where('projects.department_id', $actor->department_id);
                                 }
@@ -625,24 +624,17 @@ class AccessControl
             return false;
         }
 
-        if ($actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
-            return true;
-        }
-
-        // Direct participants in this conversation always have access
-        if ($conversation->participants()->where('user_id', $actor->id)->exists()) {
-            return true;
-        }
-
-        // Project discussion channel access
+        // Project discussion channel access: must have project view access
         if ($conversation->isProject()) {
             $project = $conversation->project ?? ($conversation->project_id ? \App\Models\Project::find($conversation->project_id) : null);
             if ($project) {
-                return $this->canAccessProject($actor, $project);
+                return $this->canAccessProject($actor, $project, 'projects.view');
             }
+            return false;
         }
 
-        return false;
+        // Direct and group chats: only explicit participants have access (no silent admin snooping)
+        return $conversation->participants()->where('user_id', $actor->id)->exists();
     }
 
     /**

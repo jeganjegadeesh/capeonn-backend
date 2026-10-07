@@ -14,6 +14,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ProjectFileController extends Controller
 {
@@ -77,11 +79,20 @@ class ProjectFileController extends Controller
         }
 
         $uploadedFile = $request->file('file');
+        $extension = strtolower($uploadedFile->getClientOriginalExtension());
+
+        // Dangerous executable extensions blacklist
+        $blockedExtensions = ['exe', 'bat', 'cmd', 'sh', 'php', 'phtml', 'cgi', 'pl', 'py', 'js', 'msi', 'com', 'vbs', 'ps1', 'jar'];
+        if (in_array($extension, $blockedExtensions, true)) {
+            return $this->error('Executable and script file uploads are not permitted.', 422);
+        }
+
         $fileName = $uploadedFile->getClientOriginalName();
         $fileSize = $uploadedFile->getSize();
         $mimeType = $uploadedFile->getMimeType() ?: 'application/octet-stream';
 
-        $path = $uploadedFile->store("projects/{$projectId}", 'public');
+        // Save privately on local disk
+        $path = $uploadedFile->store("projects/{$projectId}", 'local');
 
         $projectFile = DB::transaction(function () use ($project, $actor, $request, $fileName, $path, $fileSize, $mimeType) {
             $file = ProjectFile::create([
@@ -94,6 +105,7 @@ class ProjectFileController extends Controller
                 'file_size' => $fileSize,
                 'mime_type' => $mimeType,
                 'category' => $request->input('category', ProjectFile::CATEGORY_GENERAL),
+                'version' => 1,
                 'description' => $request->input('description'),
             ]);
 
@@ -128,6 +140,136 @@ class ProjectFileController extends Controller
             'File uploaded successfully',
             201
         );
+    }
+
+    /**
+     * Authorized download or preview of a project file.
+     */
+    public function download(Request $request, int $projectId, int $fileId): StreamedResponse|JsonResponse|BinaryFileResponse
+    {
+        $actor = $request->user();
+
+        $project = Project::where('company_id', $actor->company_id)->findOrFail($projectId);
+        $file = ProjectFile::where('project_id', $projectId)->findOrFail($fileId);
+
+        if (! $this->accessControl->canAccessProjectFiles($actor, $project)) {
+            return $this->error('You do not have permission to download this project file.', 403);
+        }
+
+        $disk = Storage::disk('local');
+        if (! $disk->exists($file->file_path)) {
+            if (Storage::disk('public')->exists($file->file_path)) {
+                $disk = Storage::disk('public');
+            } else {
+                return $this->error('File not found on storage disk.', 404);
+            }
+        }
+
+        if ($request->boolean('preview') || $request->query('inline')) {
+            $headers = [
+                'Content-Type' => $file->mime_type ?: 'application/octet-stream',
+                'Content-Disposition' => 'inline; filename="' . addslashes($file->file_name) . '"',
+            ];
+            return $disk->response($file->file_path, $file->file_name, $headers);
+        }
+
+        return $disk->download($file->file_path, $file->file_name);
+    }
+
+    /**
+     * Update file metadata (description, rename, category).
+     */
+    public function update(Request $request, int $projectId, int $fileId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $project = Project::where('company_id', $actor->company_id)->findOrFail($projectId);
+        $file = ProjectFile::where('project_id', $projectId)->findOrFail($fileId);
+
+        if (! $this->accessControl->canDeleteProjectFile($actor, $file)) {
+            return $this->error('You do not have permission to edit this file metadata.', 403);
+        }
+
+        $validated = $request->validate([
+            'file_name' => ['nullable', 'string', 'max:255'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'category' => ['nullable', 'string', 'in:general,specification,design,document,report,archive'],
+        ]);
+
+        $file->update(array_filter([
+            'file_name' => $validated['file_name'] ?? null,
+            'description' => $validated['description'] ?? null,
+            'category' => $validated['category'] ?? null,
+        ], fn ($val) => $val !== null));
+
+        $file->loadMissing(['uploader.role', 'task:id,title']);
+
+        return $this->success(new ProjectFileResource($file), 'File updated successfully');
+    }
+
+    /**
+     * Replace file with a new version.
+     */
+    public function version(Request $request, int $projectId, int $fileId): JsonResponse
+    {
+        $actor = $request->user();
+
+        $project = Project::where('company_id', $actor->company_id)->findOrFail($projectId);
+        $file = ProjectFile::where('project_id', $projectId)->findOrFail($fileId);
+
+        if (! $this->accessControl->canUploadProjectFile($actor, $project)) {
+            return $this->error('Project is closed or you do not have permission to upload new versions.', 403);
+        }
+
+        $request->validate([
+            'file' => [
+                'required',
+                'file',
+                'max:20480',
+                'mimes:jpg,jpeg,png,gif,webp,pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv,zip,tar,gz',
+            ],
+            'description' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $uploadedFile = $request->file('file');
+        $extension = strtolower($uploadedFile->getClientOriginalExtension());
+        $blockedExtensions = ['exe', 'bat', 'cmd', 'sh', 'php', 'phtml', 'cgi', 'pl', 'py', 'js', 'msi', 'com', 'vbs', 'ps1', 'jar'];
+        if (in_array($extension, $blockedExtensions, true)) {
+            return $this->error('Executable and script file uploads are not permitted.', 422);
+        }
+
+        $newPath = $uploadedFile->store("projects/{$projectId}", 'local');
+        $oldVersion = $file->version ?? 1;
+        $newVersion = $oldVersion + 1;
+
+        $file->update([
+            'file_path' => $newPath,
+            'file_name' => $uploadedFile->getClientOriginalName(),
+            'file_size' => $uploadedFile->getSize(),
+            'mime_type' => $uploadedFile->getMimeType() ?: 'application/octet-stream',
+            'version' => $newVersion,
+            'description' => $request->input('description', $file->description),
+        ]);
+
+        ProjectActivity::create([
+            'project_id' => $project->id,
+            'task_id' => $file->task_id,
+            'user_id' => $actor->id,
+            'action' => 'file_version_updated',
+            'field' => 'version',
+            'old_value' => (string) $oldVersion,
+            'new_value' => (string) $newVersion,
+            'description' => "Uploaded new version (v{$newVersion}) of file '{$file->file_name}'",
+            'metadata' => [
+                'file_id' => $file->id,
+                'version' => $newVersion,
+            ],
+            'created_at' => now(),
+        ]);
+
+        $file->loadMissing(['uploader.role', 'task:id,title']);
+
+        return $this->success(new ProjectFileResource($file), 'File version updated successfully');
     }
 
     /**

@@ -17,6 +17,9 @@ class ChatAttachmentResource extends JsonResource
             'file_size' => (int) $this->file_size,
             'mime_type' => $this->mime_type,
             'url' => $this->url,
+            'download_url' => $this->download_url,
+            'preview_url' => $this->preview_url,
+            'thumbnail_url' => str_starts_with($this->mime_type ?? '', 'image/') ? $this->preview_url : null,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

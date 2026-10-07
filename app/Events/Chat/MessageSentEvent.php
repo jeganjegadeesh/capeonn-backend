@@ -6,11 +6,11 @@ use App\Http\Resources\ChatMessageResource;
 use App\Models\ChatMessage;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MessageSentEvent implements ShouldBroadcast
+class MessageSentEvent implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
@@ -32,7 +32,7 @@ class MessageSentEvent implements ShouldBroadcast
 
     public function broadcastWith(): array
     {
-        $this->message->loadMissing(['user.role', 'replyTo.user', 'task', 'attachments']);
+        $this->message->loadMissing(['user.role', 'replyTo.user', 'task', 'attachments', 'mentions', 'pinnedBy', 'deletedBy']);
         return [
             'message' => (new ChatMessageResource($this->message))->resolve(),
         ];

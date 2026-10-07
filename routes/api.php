@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\V1\PresenceController;
 use App\Http\Controllers\Api\V1\TaskController;
 use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
+use App\Http\Controllers\Api\V1\DeviceTokenController;
 use Illuminate\Support\Facades\Route;
 
 // Ids in URLs are always numeric; anything else is a 404.
@@ -37,6 +38,8 @@ Route::pattern('entry', '[0-9]+');
 Route::pattern('conversation', '[0-9]+');
 Route::pattern('message', '[0-9]+');
 Route::pattern('file', '[0-9]+');
+Route::pattern('upload', '[0-9]+');
+Route::pattern('attachment', '[0-9]+');
 Route::pattern('user', '[0-9]+');
 
 Route::prefix('v1')->group(function () {
@@ -60,6 +63,7 @@ Route::prefix('v1')->group(function () {
         });
 
         Route::post('/uploads', [UploadController::class, 'store'])->middleware('throttle:30,1');
+        Route::get('/uploads/{upload}/download', [UploadController::class, 'download']);
 
         // ---- Organization ----
         Route::middleware('permission:organization.view')->group(function () {
@@ -209,6 +213,9 @@ Route::prefix('v1')->group(function () {
             // Project files (Phase 6)
             Route::get('/{project}/files', [ProjectFileController::class, 'index']);
             Route::post('/{project}/files', [ProjectFileController::class, 'store']);
+            Route::get('/{project}/files/{file}/download', [ProjectFileController::class, 'download']);
+            Route::put('/{project}/files/{file}', [ProjectFileController::class, 'update']);
+            Route::post('/{project}/files/{file}/version', [ProjectFileController::class, 'version']);
             Route::delete('/{project}/files/{file}', [ProjectFileController::class, 'destroy']);
         });
 
@@ -223,6 +230,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/{task}/assign', [TaskController::class, 'assign'])->middleware('permission:tasks.manage');
             Route::get('/{task}/subtasks', [TaskController::class, 'subtasks'])->middleware('permission:tasks.view');
             Route::post('/{task}/subtasks', [TaskController::class, 'createSubtask'])->middleware('permission:tasks.manage');
+            Route::get('/{task}/messages', [ChatController::class, 'taskMessages'])->middleware('permission:tasks.view');
 
             // Timer & manual time entries
             Route::post('/{task}/timer/start', [TimeEntryController::class, 'startTimer'])->middleware('permission:time.track');
@@ -252,23 +260,33 @@ Route::prefix('v1')->group(function () {
             Route::get('/project/{project}', [ChatController::class, 'forProject']);
             Route::get('/{conversation}', [ChatController::class, 'show']);
             Route::put('/{conversation}', [ChatController::class, 'update']);
+            Route::post('/{conversation}/mute', [ChatController::class, 'mute']);
+            Route::post('/{conversation}/leave', [ChatController::class, 'leave']);
             Route::post('/{conversation}/participants', [ChatController::class, 'addParticipants']);
             Route::delete('/{conversation}/participants/{user}', [ChatController::class, 'removeParticipant']);
 
             // Messages inside conversation
             Route::get('/{conversation}/messages', [ChatMessageController::class, 'index']);
-            Route::post('/{conversation}/messages', [ChatMessageController::class, 'store']);
+            Route::post('/{conversation}/messages', [ChatMessageController::class, 'store'])->middleware('throttle:60,1');
+            Route::put('/{conversation}/messages/{message}', [ChatMessageController::class, 'update']);
+            Route::post('/{conversation}/messages/{message}/pin', [ChatMessageController::class, 'pin']);
             Route::post('/{conversation}/read', [ChatMessageController::class, 'markAsRead']);
-            Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing']);
+            Route::post('/{conversation}/typing', [ChatMessageController::class, 'typing'])->middleware('throttle:60,1');
             Route::delete('/{conversation}/messages/{message}', [ChatMessageController::class, 'destroy']);
+            Route::get('/{conversation}/attachments/{attachment}/download', [ChatMessageController::class, 'downloadAttachment']);
         });
 
         // ---- Live Online / Offline Presence Heartbeat (Phase 6) ----
         Route::prefix('presence')->group(function () {
-            Route::post('/heartbeat', [PresenceController::class, 'heartbeat']);
-            Route::post('/offline', [PresenceController::class, 'offline']);
+            Route::post('/heartbeat', [PresenceController::class, 'heartbeat'])->middleware('throttle:60,1');
+            Route::post('/offline', [PresenceController::class, 'offline'])->middleware('throttle:60,1');
             Route::get('/', [PresenceController::class, 'index']);
+            Route::put('/privacy', [PresenceController::class, 'updatePrivacy']);
         });
+
+        // ---- Push-Ready Device Tokens (Phase 8 FCM Preparation) ----
+        Route::post('/device-tokens', [DeviceTokenController::class, 'store']);
+        Route::delete('/device-tokens', [DeviceTokenController::class, 'destroy']);
 
         // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----
         Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {

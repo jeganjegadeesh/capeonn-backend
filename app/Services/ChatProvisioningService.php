@@ -5,12 +5,75 @@ namespace App\Services;
 use App\Models\ChatMessage;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
+use App\Models\Project;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ChatProvisioningService
 {
+    /**
+     * Synchronize conversation participants for a project discussion channel
+     * to strictly match current team lead, manager, and active team members.
+     */
+    public function syncProjectParticipants(Project $project): void
+    {
+        $conversation = Conversation::where('project_id', $project->id)
+            ->where('type', Conversation::TYPE_PROJECT)
+            ->first();
+
+        if (! $conversation) {
+            return;
+        }
+
+        $allowedUserIds = collect();
+        if ($project->team_lead_id) {
+            $allowedUserIds->push((int) $project->team_lead_id);
+        }
+        if ($project->manager_id) {
+            $allowedUserIds->push((int) $project->manager_id);
+        }
+
+        $memberIds = $project->members()
+            ->where('users.is_active', true)
+            ->pluck('users.id');
+
+        $allowedUserIds = $allowedUserIds->merge($memberIds)->unique()->values();
+
+        // 1. Remove participants who are no longer on the project
+        ConversationParticipant::where('conversation_id', $conversation->id)
+            ->whereNotIn('user_id', $allowedUserIds)
+            ->delete();
+
+        // 2. Ensure current allowed participants are present
+        foreach ($allowedUserIds as $userId) {
+            $role = ($userId === (int) $project->team_lead_id || $userId === (int) $project->manager_id)
+                ? ConversationParticipant::ROLE_ADMIN
+                : ConversationParticipant::ROLE_MEMBER;
+
+            ConversationParticipant::updateOrCreate(
+                [
+                    'conversation_id' => $conversation->id,
+                    'user_id' => $userId,
+                ],
+                [
+                    'role' => $role,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Clean up conversation memberships when an employee is deactivated.
+     */
+    public function handleUserDeactivated(User $user): void
+    {
+        // Remove deactivated user from all project conversations
+        ConversationParticipant::where('user_id', $user->id)
+            ->whereHas('conversation', fn ($q) => $q->where('type', Conversation::TYPE_PROJECT))
+            ->delete();
+    }
+
     /**
      * Connect a newly created employee with all active colleagues in their company
      * via direct chats, seeded with a welcome/introduction message.

@@ -29,10 +29,16 @@ class ProjectFile extends Model
         'file_size',
         'mime_type',
         'category',
+        'version',
         'description',
     ];
 
-    protected $appends = ['url', 'formatted_size'];
+    protected $casts = [
+        'version' => 'integer',
+        'file_size' => 'integer',
+    ];
+
+    protected $appends = ['url', 'download_url', 'preview_url', 'formatted_size'];
 
     public function company(): BelongsTo
     {
@@ -56,8 +62,17 @@ class ProjectFile extends Model
 
     public function getUrlAttribute(): string
     {
-        $path = Storage::disk('public')->url($this->file_path);
-        return str_starts_with($path, 'http') ? $path : url($path);
+        return url("/api/v1/projects/{$this->project_id}/files/{$this->id}/download");
+    }
+
+    public function getDownloadUrlAttribute(): string
+    {
+        return url("/api/v1/projects/{$this->project_id}/files/{$this->id}/download");
+    }
+
+    public function getPreviewUrlAttribute(): string
+    {
+        return url("/api/v1/projects/{$this->project_id}/files/{$this->id}/download?preview=1");
     }
 
     public function getFormattedSizeAttribute(): string

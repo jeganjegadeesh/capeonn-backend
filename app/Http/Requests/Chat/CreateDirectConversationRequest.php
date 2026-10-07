@@ -30,6 +30,7 @@ class CreateDirectConversationRequest extends FormRequest
     {
         return [
             'user_id.not_in' => 'You cannot start a direct conversation with yourself.',
+            'user_id.exists' => 'The selected colleague does not exist, is inactive, or is not in your company.',
         ];
     }
 }

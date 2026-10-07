@@ -44,6 +44,7 @@ class User extends Authenticatable
         'salary',
         'last_login_at',
         'last_seen_at',
+        'hide_presence',
         'dob',
         'gender',
         'address',
@@ -77,6 +78,7 @@ class User extends Authenticatable
             'salary' => 'decimal:2',
             'last_login_at' => 'datetime',
             'last_seen_at' => 'datetime',
+            'hide_presence' => 'boolean',
             'dob' => 'date',
             'probation_end_date' => 'date',
             'skills' => 'array',
@@ -89,7 +91,15 @@ class User extends Authenticatable
      */
     public function isOnline(int $thresholdSeconds = 120): bool
     {
+        if ($this->hide_presence) {
+            return false;
+        }
         return $this->last_seen_at !== null && $this->last_seen_at->gt(now()->subSeconds($thresholdSeconds));
+    }
+
+    public function deviceTokens(): HasMany
+    {
+        return $this->hasMany(DeviceToken::class);
     }
 
     public function sendPasswordResetNotification($token): void

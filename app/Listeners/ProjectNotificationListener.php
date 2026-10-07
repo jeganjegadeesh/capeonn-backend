@@ -113,4 +113,39 @@ class ProjectNotificationListener
             }
         }
     }
+
+    public function handleProjectFileUploaded(\App\Events\Projects\ProjectFileUploadedEvent $event): void
+    {
+        $project = $event->file->project;
+        $uploader = $event->uploader;
+        if (! $project) {
+            return;
+        }
+
+        $recipients = collect();
+        if ($project->team_lead_id) {
+            $recipients->push((int) $project->team_lead_id);
+        }
+        if ($project->manager_id) {
+            $recipients->push((int) $project->manager_id);
+        }
+        $memberIds = $project->members()->pluck('users.id');
+        $recipients = $recipients->merge($memberIds)
+            ->unique()
+            ->filter(fn ($id) => (int) $id !== (int) $uploader->id);
+
+        foreach ($recipients as $userId) {
+            Notification::create([
+                'company_id' => $project->company_id,
+                'user_id'    => $userId,
+                'type'       => 'project_file_uploaded',
+                'title'      => "New file in {$project->name}",
+                'message'    => "{$uploader->name} uploaded file '{$event->file->file_name}'.",
+                'data'       => [
+                    'project_id' => $project->id,
+                    'file_id'    => $event->file->id,
+                ],
+            ]);
+        }
+    }
 }
