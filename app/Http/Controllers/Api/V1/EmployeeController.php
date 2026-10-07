@@ -30,9 +30,17 @@ class EmployeeController extends Controller
     public function index(Request $request): JsonResponse
     {
         $search = trim((string) $request->query('search', ''));
+        $forDirectory = $request->boolean('directory', false) || $request->query('purpose') === 'chat';
 
-        $paginator = $this->access
-            ->constrainUsers(User::query(), $request->user(), 'employees.view')
+        if ($forDirectory && $request->user()->hasPermission('chat.use')) {
+            $baseQuery = User::query()
+                ->where('company_id', $request->user()->company_id)
+                ->where('is_active', true);
+        } else {
+            $baseQuery = $this->access->constrainUsers(User::query(), $request->user(), 'employees.view');
+        }
+
+        $paginator = $baseQuery
             ->with(self::WITH)
             ->when($search !== '', fn ($q) => $q->where(function ($q) use ($search) {
                 $q->where('users.name', 'like', "%{$search}%")

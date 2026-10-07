@@ -360,4 +360,23 @@ class ChatTest extends TestCase
         ]);
         $otherUserRes->assertStatus(403);
     }
+
+    public function test_employee_can_list_colleagues_for_chat(): void
+    {
+        Sanctum::actingAs($this->user2);
+
+        $res = $this->getJson('/api/v1/conversations/colleagues');
+        $res->assertOk();
+        $ids = array_column($res->json('data'), 'id');
+
+        $this->assertContains($this->user1->id, $ids);
+        $this->assertContains($this->user3->id, $ids);
+        $this->assertNotContains($this->user2->id, $ids);
+
+        $dirRes = $this->getJson('/api/v1/employees?directory=1');
+        $dirRes->assertOk();
+        $dirIds = array_column($dirRes->json('data'), 'id');
+        $this->assertContains($this->user1->id, $dirIds);
+        $this->assertContains($this->user3->id, $dirIds);
+    }
 }

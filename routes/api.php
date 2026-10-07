@@ -255,6 +255,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [ChatController::class, 'index']);
             Route::get('/unread-summary', [ChatController::class, 'unreadSummary']);
             Route::get('/search', [ChatMessageController::class, 'search']);
+            Route::get('/colleagues', [ChatController::class, 'colleagues']);
             Route::post('/direct', [ChatController::class, 'direct']);
             Route::post('/group', [ChatController::class, 'group']);
             Route::get('/project/{project}', [ChatController::class, 'forProject']);

@@ -7,6 +7,7 @@ use App\Http\Requests\Chat\CreateDirectConversationRequest;
 use App\Http\Requests\Chat\CreateGroupConversationRequest;
 use App\Http\Resources\ChatMessageResource;
 use App\Http\Resources\ConversationResource;
+use App\Http\Resources\UserResource;
 use App\Models\ChatMessage;
 use App\Models\Conversation;
 use App\Models\ConversationParticipant;
@@ -69,6 +70,44 @@ class ChatController extends Controller
             $items,
             'Conversations loaded'
         );
+    }
+
+    /**
+     * Search and list active colleagues within the same company for starting conversations.
+     */
+    public function colleagues(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $search = trim((string) $request->query('search', ''));
+
+        $query = User::query()
+            ->where('company_id', $user->company_id)
+            ->where('is_active', true)
+            ->with([
+                'department:id,name',
+                'designation:id,name',
+                'role:id,slug,name,level',
+            ])
+            ->when(! $request->boolean('include_self', false), fn ($q) => $q->where('id', '!=', $user->id))
+            ->when($search !== '', function ($q) use ($search) {
+                $escaped = addcslashes($search, '%_\\');
+                $q->where(function ($sub) use ($escaped) {
+                    $sub->where('name', 'like', "%{$escaped}%")
+                        ->orWhere('email', 'like', "%{$escaped}%")
+                        ->orWhere('employee_code', 'like', "%{$escaped}%");
+                });
+            })
+            ->when($request->filled('department_id'), fn ($q) => $q->where('department_id', (int) $request->query('department_id')))
+            ->orderBy('name');
+
+        $paginator = $query->paginate($this->perPage($request));
+
+        $items = $paginator->getCollection()
+            ->map(fn (User $u) => (new UserResource($u))->resolve())
+            ->values()
+            ->all();
+
+        return $this->paginated($paginator, $items);
     }
 
     /**
