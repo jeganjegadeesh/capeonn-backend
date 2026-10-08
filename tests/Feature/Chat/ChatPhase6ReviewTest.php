@@ -15,6 +15,7 @@ use App\Models\Department;
 use App\Models\Notification;
 use App\Models\Project;
 use App\Models\ProjectFile;
+use App\Models\ProjectFileVersion;
 use App\Models\Role;
 use App\Models\Task;
 use App\Models\Upload;
@@ -22,6 +23,7 @@ use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
@@ -608,5 +610,281 @@ class ChatPhase6ReviewTest extends TestCase
         $this->assertDatabaseMissing('device_tokens', [
             'token' => 'fcm_test_token_12345',
         ]);
+    }
+
+    /**
+     * 17. task_id for a task the sender cannot view is rejected in a direct chat.
+     */
+    public function test_task_linking_requires_can_access_task_in_direct_chat(): void
+    {
+        // Create an internal project where Member 1 is NOT a member
+        $secretProject = Project::create([
+            'company_id' => $this->company->id,
+            'department_id' => $this->department->id,
+            'name' => 'Confidential Board Review',
+            'code' => 'CPN-SEC',
+            'status' => 'active',
+            'priority' => 'high',
+            'start_date' => now(),
+            'deadline' => now()->addMonth(),
+            'team_lead_id' => $this->teamLead->id,
+            'created_by_id' => $this->superAdmin->id,
+        ]);
+
+        $secretTask = Task::create([
+            'company_id' => $this->company->id,
+            'project_id' => $secretProject->id,
+            'title' => 'Secret Audit Task',
+            'status' => 'assigned',
+            'priority' => 'high',
+            'created_by_id' => $this->superAdmin->id,
+        ]);
+
+        // Member 1 tries to attach secretTask in a DM with Member 2
+        Sanctum::actingAs($this->member1);
+        $dmId = $this->postJson('/api/v1/conversations/direct', ['user_id' => $this->member2->id])->json('data.id');
+
+        $res = $this->postJson("/api/v1/conversations/{$dmId}/messages", [
+            'message' => 'Sneak peek at secret task',
+            'task_id' => $secretTask->id,
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonValidationErrors(['task_id']);
+    }
+
+    /**
+     * 18. Mentioning a non-participant is rejected.
+     */
+    public function test_mentioning_non_participant_is_rejected(): void
+    {
+        Sanctum::actingAs($this->member1);
+        $dmId = $this->postJson('/api/v1/conversations/direct', ['user_id' => $this->member2->id])->json('data.id');
+
+        // Member 1 tries to mention teamLead who is not in this direct conversation
+        $res = $this->postJson("/api/v1/conversations/{$dmId}/messages", [
+            'message' => 'Hey @Alice check our private DM',
+            'mentions' => [$this->teamLead->id],
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonValidationErrors(['mentions']);
+    }
+
+    /**
+     * 19. Renaming a project file preserves original extension and blocks dangerous extensions.
+     */
+    public function test_renaming_file_preserves_original_extension_and_blocks_executable(): void
+    {
+        Sanctum::actingAs($this->member1);
+
+        $file = UploadedFile::fake()->create('report.pdf', 150, 'application/pdf');
+        $up = $this->postJson("/api/v1/projects/{$this->project->id}/files", ['file' => $file])->json('data');
+        $fileId = $up['id'];
+
+        // Renaming to .exe is rejected
+        $exeRename = $this->putJson("/api/v1/projects/{$this->project->id}/files/{$fileId}", [
+            'file_name' => 'malicious.exe',
+        ]);
+        $exeRename->assertStatus(422);
+
+        // Renaming to base name preserves .pdf
+        $safeRename = $this->putJson("/api/v1/projects/{$this->project->id}/files/{$fileId}", [
+            'file_name' => 'annual_report',
+        ]);
+        $safeRename->assertStatus(200)
+            ->assertJsonPath('data.file_name', 'annual_report.pdf');
+    }
+
+    /**
+     * 20. Replacing a file version is restricted to uploader/lead/manager, and version history is preserved.
+     */
+    public function test_replacing_file_version_restricted_and_history_preserved(): void
+    {
+        Sanctum::actingAs($this->member1);
+
+        $fileV1 = UploadedFile::fake()->create('contract_v1.pdf', 100, 'application/pdf');
+        $up = $this->postJson("/api/v1/projects/{$this->project->id}/files", ['file' => $fileV1])->json('data');
+        $fileId = $up['id'];
+
+        // Member 2 (not uploader, not lead) tries to upload a new version -> 403
+        Sanctum::actingAs($this->member2);
+        $fileV2 = UploadedFile::fake()->create('contract_v2.pdf', 120, 'application/pdf');
+        $unauthVer = $this->postJson("/api/v1/projects/{$this->project->id}/files/{$fileId}/version", [
+            'file' => $fileV2,
+            'description' => 'Unauthorized overwrite attempt',
+        ]);
+        $unauthVer->assertStatus(403);
+
+        // Uploader Member 1 uploads new version -> 200
+        Sanctum::actingAs($this->member1);
+        $authVer = $this->postJson("/api/v1/projects/{$this->project->id}/files/{$fileId}/version", [
+            'file' => $fileV2,
+            'description' => 'Version 2 with legal review changes',
+        ]);
+        $authVer->assertStatus(200)
+            ->assertJsonPath('data.version', 2);
+
+        // Verify version history exists in database
+        $this->assertDatabaseHas('project_file_versions', [
+            'project_file_id' => $fileId,
+            'version' => 1,
+        ]);
+        $this->assertDatabaseHas('project_file_versions', [
+            'project_file_id' => $fileId,
+            'version' => 2,
+        ]);
+
+        // Get versions list
+        $verList = $this->getJson("/api/v1/projects/{$this->project->id}/files/{$fileId}/versions");
+        $verList->assertStatus(200);
+        $this->assertCount(2, $verList->json('data'));
+
+        // Version 1 download endpoint works
+        $v1Record = ProjectFileVersion::where('project_file_id', $fileId)->where('version', 1)->firstOrFail();
+        $v1Download = $this->getJson("/api/v1/projects/{$this->project->id}/files/{$fileId}/versions/{$v1Record->id}/download");
+        $v1Download->assertStatus(200);
+
+        // Restore version 1
+        $restoreRes = $this->postJson("/api/v1/projects/{$this->project->id}/files/{$fileId}/versions/{$v1Record->id}/restore");
+        $restoreRes->assertStatus(200)
+            ->assertJsonPath('data.version', 3);
+    }
+
+    /**
+     * 21. Pin permissions and maximum 5 pins limit.
+     */
+    public function test_pin_permissions_and_max_limit_enforced(): void
+    {
+        Sanctum::actingAs($this->member1);
+        $group = $this->postJson('/api/v1/conversations/group', [
+            'title' => 'Core Team',
+            'participant_ids' => [$this->member2->id],
+        ])->json('data');
+        $convId = $group['id'];
+
+        // Send 6 messages
+        $msgIds = [];
+        for ($i = 1; $i <= 6; $i++) {
+            $msgIds[] = $this->postJson("/api/v1/conversations/{$convId}/messages", [
+                'message' => "Message number $i",
+            ])->json('data.id');
+        }
+
+        // Member 2 (not admin) tries to pin -> 403
+        Sanctum::actingAs($this->member2);
+        $unauthPin = $this->postJson("/api/v1/conversations/{$convId}/messages/{$msgIds[0]}/pin");
+        $unauthPin->assertStatus(403);
+
+        // Admin Member 1 pins first 5 messages -> all 200
+        Sanctum::actingAs($this->member1);
+        for ($i = 0; $i < 5; $i++) {
+            $pinRes = $this->postJson("/api/v1/conversations/{$convId}/messages/{$msgIds[$i]}/pin");
+            $pinRes->assertStatus(200)->assertJsonPath('data.is_pinned', true);
+        }
+
+        // Admin tries to pin 6th message -> 422 limit exceeded
+        $overLimitPin = $this->postJson("/api/v1/conversations/{$convId}/messages/{$msgIds[5]}/pin");
+        $overLimitPin->assertStatus(422)
+            ->assertJsonPath('message', 'A maximum of 5 messages can be pinned per conversation.');
+    }
+
+    /**
+     * 22. Scheduled upload cleanup command deletes unattached stale uploads.
+     */
+    public function test_clean_uploads_command_removes_stale_unattached_uploads(): void
+    {
+        Storage::fake('local');
+
+        // Create an unattached upload older than 24h
+        Storage::disk('local')->put('chat_uploads/stale_unattached.pdf', 'dummy content');
+        \Illuminate\Support\Carbon::setTestNow(now()->subHours(25));
+        $staleUpload = Upload::create([
+            'company_id' => $this->company->id,
+            'user_id' => $this->member1->id,
+            'file_path' => 'chat_uploads/stale_unattached.pdf',
+            'file_name' => 'stale_unattached.pdf',
+            'file_size' => 100,
+            'mime_type' => 'application/pdf',
+            'disk' => 'local',
+        ]);
+        \Illuminate\Support\Carbon::setTestNow();
+
+        // Create a recent unattached upload (1 hour old)
+        Storage::disk('local')->put('chat_uploads/recent_unattached.pdf', 'dummy content');
+        $recentUpload = Upload::create([
+            'company_id' => $this->company->id,
+            'user_id' => $this->member1->id,
+            'file_path' => 'chat_uploads/recent_unattached.pdf',
+            'file_name' => 'recent_unattached.pdf',
+            'file_size' => 100,
+            'mime_type' => 'application/pdf',
+            'disk' => 'local',
+        ]);
+
+        // Run cleanup command
+        $exitCode = Artisan::call('capeonn:cleanup-uploads');
+        $this->assertEquals(0, $exitCode);
+
+        // Stale upload deleted
+        $this->assertDatabaseMissing('uploads', ['id' => $staleUpload->id]);
+        Storage::disk('local')->assertMissing('chat_uploads/stale_unattached.pdf');
+
+        // Recent upload preserved
+        $this->assertDatabaseHas('uploads', ['id' => $recentUpload->id]);
+        Storage::disk('local')->assertExists('chat_uploads/recent_unattached.pdf');
+    }
+
+    /**
+     * 23. Notifications inbox endpoints: list, unread-count, mark-read, mark-all-read.
+     */
+    public function test_notifications_inbox_endpoints(): void
+    {
+        Sanctum::actingAs($this->member1);
+
+        // Seed two notifications
+        $n1 = Notification::create([
+            'company_id' => $this->company->id,
+            'user_id' => $this->member1->id,
+            'type' => 'chat_mention',
+            'title' => 'Mentioned in Apollo',
+            'message' => 'Alice mentioned you in Apollo Mission',
+            'data' => ['conversation_id' => 1],
+        ]);
+
+        $n2 = Notification::create([
+            'company_id' => $this->company->id,
+            'user_id' => $this->member1->id,
+            'type' => 'task_assigned',
+            'title' => 'Task Assigned',
+            'message' => 'You were assigned a new task',
+            'data' => ['task_id' => 10],
+        ]);
+
+        // 1. Unread count
+        $countRes = $this->getJson('/api/v1/notifications/unread-count');
+        $countRes->assertStatus(200)
+            ->assertJsonPath('data.unread_count', 2);
+
+        // 2. Notifications index
+        $listRes = $this->getJson('/api/v1/notifications');
+        $listRes->assertStatus(200)
+            ->assertJsonPath('meta.unread_count', 2);
+        $this->assertCount(2, $listRes->json('data'));
+
+        // 3. Mark single notification as read
+        $markOne = $this->postJson("/api/v1/notifications/{$n1->id}/read");
+        $markOne->assertStatus(200);
+        $this->assertNotNull($n1->fresh()->read_at);
+
+        $countRes2 = $this->getJson('/api/v1/notifications/unread-count');
+        $countRes2->assertJsonPath('data.unread_count', 1);
+
+        // 4. Mark all as read
+        $markAll = $this->postJson('/api/v1/notifications/read-all');
+        $markAll->assertStatus(200);
+
+        $countRes3 = $this->getJson('/api/v1/notifications/unread-count');
+        $countRes3->assertJsonPath('data.unread_count', 0);
     }
 }

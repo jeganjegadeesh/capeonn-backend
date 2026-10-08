@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\V1\TaskController;
 use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\DeviceTokenController;
+use App\Http\Controllers\Api\V1\NotificationController;
 use Illuminate\Support\Facades\Route;
 
 // Ids in URLs are always numeric; anything else is a 404.
@@ -216,6 +217,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/{project}/files/{file}/download', [ProjectFileController::class, 'download']);
             Route::put('/{project}/files/{file}', [ProjectFileController::class, 'update']);
             Route::post('/{project}/files/{file}/version', [ProjectFileController::class, 'version']);
+            Route::get('/{project}/files/{file}/versions', [ProjectFileController::class, 'versions']);
+            Route::get('/{project}/files/{file}/versions/{version}/download', [ProjectFileController::class, 'downloadVersion']);
+            Route::post('/{project}/files/{file}/versions/{version}/restore', [ProjectFileController::class, 'restoreVersion']);
             Route::delete('/{project}/files/{file}', [ProjectFileController::class, 'destroy']);
         });
 
@@ -289,6 +293,15 @@ Route::prefix('v1')->group(function () {
         // ---- Push-Ready Device Tokens (Phase 8 FCM Preparation) ----
         Route::post('/device-tokens', [DeviceTokenController::class, 'store']);
         Route::delete('/device-tokens', [DeviceTokenController::class, 'destroy']);
+
+        // ---- Notifications Inbox (Phase 6 / 7) ----
+        Route::prefix('notifications')->group(function () {
+            Route::get('/', [NotificationController::class, 'index']);
+            Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+            Route::post('/read-all', [NotificationController::class, 'markAllRead']);
+            Route::post('/{id}/read', [NotificationController::class, 'markRead']);
+            Route::delete('/{id}', [NotificationController::class, 'destroy']);
+        });
 
         // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----
         Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {

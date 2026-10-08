@@ -60,6 +60,11 @@ class ProjectFile extends Model
         return $this->belongsTo(User::class, 'uploaded_by_id');
     }
 
+    public function versions(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ProjectFileVersion::class, 'project_file_id')->orderBy('version', 'desc');
+    }
+
     public function getUrlAttribute(): string
     {
         return url("/api/v1/projects/{$this->project_id}/files/{$this->id}/download");

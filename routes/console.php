@@ -25,3 +25,6 @@ Schedule::command('capeonn:check-task-deadlines')->hourly();
 // Auto-stop forgotten continuous timers exceeding 12 hours
 Schedule::command('capeonn:auto-stop-timers --max-hours=12')->everyFifteenMinutes();
 
+// Daily cleanup of unattached uploads and purged deleted chat attachments
+Schedule::command('capeonn:cleanup-uploads')->dailyAt('03:00');
+

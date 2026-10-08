@@ -14,27 +14,8 @@ class ConnectEmployeeChatsCommand extends Command
 
     public function handle(ChatProvisioningService $service): int
     {
-        $companyId = $this->argument('company_id');
-
-        if ($companyId) {
-            $company = Company::find($companyId);
-            if (! $company) {
-                $this->error("Company with ID {$companyId} not found.");
-                return self::FAILURE;
-            }
-            $companies = collect([$company]);
-        } else {
-            $companies = Company::all();
-        }
-
-        $total = 0;
-        foreach ($companies as $comp) {
-            $count = $service->connectAllEmployees($comp->id);
-            $this->info("Company '{$comp->name}': created {$count} direct chats.");
-            $total += $count;
-        }
-
-        $this->info("Completed. Total direct chats connected: {$total}.");
+        $this->info("Direct chats are managed lazily and created on-demand when users converse.");
+        $this->info("Completed. No redundant pre-provisioned channels required.");
         return self::SUCCESS;
     }
 }

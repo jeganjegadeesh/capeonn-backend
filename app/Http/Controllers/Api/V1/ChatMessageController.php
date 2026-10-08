@@ -47,16 +47,6 @@ class ChatMessageController extends Controller
             return $this->error('You do not have access to this conversation.', 403);
         }
 
-        if ($conversation->isProject() && ! $conversation->participants()->where('user_id', $actor->id)->exists()) {
-            \App\Models\ConversationParticipant::create([
-                'conversation_id' => $conversation->id,
-                'user_id' => $actor->id,
-                'role' => ($actor->id === $conversation->project?->team_lead_id || $actor->id === $conversation->project?->manager_id)
-                    ? \App\Models\ConversationParticipant::ROLE_ADMIN
-                    : \App\Models\ConversationParticipant::ROLE_MEMBER,
-            ]);
-        }
-
         $query = ChatMessage::where('conversation_id', $conversationId)
             ->with([
                 'user:id,name,role_id',
@@ -123,11 +113,13 @@ class ChatMessageController extends Controller
                     $uploadId = $att['upload_id'] ?? null;
                     $filePath = $att['file_path'] ?? null;
 
-                    $upload = Upload::where('company_id', $actor->company_id)
-                        ->where('user_id', $actor->id)
-                        ->when($uploadId, fn ($q) => $q->where('id', (int) $uploadId))
-                        ->when(! $uploadId && $filePath, fn ($q) => $q->where('file_path', $filePath))
-                        ->first();
+                    $upload = null;
+                    if ($uploadId) {
+                        $upload = Upload::where('company_id', $actor->company_id)
+                            ->where('user_id', $actor->id)
+                            ->where('id', (int) $uploadId)
+                            ->first();
+                    }
 
                     if ($upload) {
                         ChatAttachment::create([
@@ -137,34 +129,16 @@ class ChatMessageController extends Controller
                             'file_size' => $upload->file_size,
                             'mime_type' => $upload->mime_type,
                         ]);
-                    } elseif ($filePath) {
-                        // Fallback for direct uploads with verified parameters
-                        ChatAttachment::create([
-                            'chat_message_id' => $msg->id,
-                            'file_path' => $filePath,
-                            'file_name' => $att['file_name'] ?? basename($filePath),
-                            'file_size' => (int) ($att['file_size'] ?? 0),
-                            'mime_type' => $att['mime_type'] ?? 'application/octet-stream',
-                        ]);
                     }
                 }
             }
 
-            // Save @mentions
-            $mentionIds = collect($validated['mentions'] ?? []);
+            // Save @mentions strictly from validated client-provided mention IDs
+            $mentionIds = collect($validated['mentions'] ?? [])
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->filter(fn ($id) => $id !== (int) $actor->id);
 
-            // Also auto-detect @Name in message text if any
-            if (! empty($msg->message)) {
-                if (preg_match_all('/@([A-Za-z0-9_ ]+)/', $msg->message, $matches)) {
-                    $names = array_map('trim', $matches[1]);
-                    $detectedUserIds = User::where('company_id', $actor->company_id)
-                        ->whereIn('name', $names)
-                        ->pluck('id');
-                    $mentionIds = $mentionIds->merge($detectedUserIds);
-                }
-            }
-
-            $mentionIds = $mentionIds->unique()->filter(fn ($id) => (int) $id !== (int) $actor->id);
             foreach ($mentionIds as $mUserId) {
                 ChatMessageMention::firstOrCreate([
                     'chat_message_id' => $msg->id,
@@ -228,8 +202,18 @@ class ChatMessageController extends Controller
             return $this->error('Cannot edit a deleted message.', 422);
         }
 
+        if (! $this->accessControl->canPostInConversation($actor, $conversation)) {
+            return $this->error('You cannot edit messages in this conversation. The project may be closed or access revoked.', 403);
+        }
+
+        if ($message->created_at && $message->created_at->diffInHours(now()) > 24) {
+            return $this->error('Messages can only be edited within 24 hours of sending.', 422);
+        }
+
         $request->validate([
             'message' => ['required', 'string', 'max:5000'],
+            'mentions' => ['nullable', 'array'],
+            'mentions.*' => ['integer'],
         ]);
 
         $message->update([
@@ -237,6 +221,28 @@ class ChatMessageController extends Controller
             'is_edited' => true,
             'edited_at' => now(),
         ]);
+
+        if ($request->has('mentions')) {
+            $newMentions = collect($request->input('mentions', []))
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->filter(fn ($id) => $id !== (int) $actor->id);
+
+            $participantIds = $conversation->participants()->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+            foreach ($newMentions as $mId) {
+                if (! in_array($mId, $participantIds, true)) {
+                    return $this->error('Mentioned users must be participants in this conversation.', 422);
+                }
+            }
+
+            ChatMessageMention::where('chat_message_id', $message->id)->delete();
+            foreach ($newMentions as $mId) {
+                ChatMessageMention::create([
+                    'chat_message_id' => $message->id,
+                    'user_id' => $mId,
+                ]);
+            }
+        }
 
         $message->loadMissing([
             'user:id,name,role_id',
@@ -296,7 +302,30 @@ class ChatMessageController extends Controller
             return $this->error('You do not have access to pin messages here.', 403);
         }
 
+        $canPin = false;
+        if ($conversation->isDirect()) {
+            $canPin = $conversation->participants()->where('user_id', $actor->id)->exists();
+        } elseif ($conversation->isGroup()) {
+            $canPin = $this->accessControl->canManageConversation($actor, $conversation);
+        } elseif ($conversation->isProject()) {
+            $project = $conversation->project;
+            $canPin = $actor->hasRole(Role::SUPER_ADMIN, 'admin')
+                || ($project && ($actor->id === $project->team_lead_id || $this->accessControl->canManageProject($actor, $project)));
+        }
+
+        if (! $canPin) {
+            return $this->error('You do not have permission to pin messages in this conversation.', 403);
+        }
+
         $isPinned = ! $message->is_pinned;
+
+        if ($isPinned) {
+            $pinnedCount = ChatMessage::where('conversation_id', $conversationId)->where('is_pinned', true)->count();
+            if ($pinnedCount >= 5) {
+                return $this->error('A maximum of 5 messages can be pinned per conversation.', 422);
+            }
+        }
+
         $message->update([
             'is_pinned' => $isPinned,
             'pinned_at' => $isPinned ? now() : null,
@@ -340,17 +369,14 @@ class ChatMessageController extends Controller
 
         $disk = Storage::disk('local');
         if (! $disk->exists($attachment->file_path)) {
-            if (Storage::disk('public')->exists($attachment->file_path)) {
-                $disk = Storage::disk('public');
-            } else {
-                return $this->error('Attachment file not found on disk.', 404);
-            }
+            return $this->error('Attachment file not found on disk.', 404);
         }
 
         if ($request->boolean('preview') || $request->query('inline')) {
             $headers = [
                 'Content-Type' => $attachment->mime_type ?: 'application/octet-stream',
                 'Content-Disposition' => 'inline; filename="' . addslashes($attachment->file_name) . '"',
+                'X-Content-Type-Options' => 'nosniff',
             ];
             return $disk->response($attachment->file_path, $attachment->file_name, $headers);
         }
@@ -405,28 +431,46 @@ class ChatMessageController extends Controller
 
         $isTyping = (bool) $request->input('is_typing', true);
 
-        broadcast(new UserTypingEvent($conversationId, $actor, $isTyping));
+        broadcast(new UserTypingEvent($conversationId, $actor, $isTyping))->toOthers();
 
-        // Cache-backed typing status for dual-mode polling fallback
+        // Cache-backed typing status for dual-mode polling fallback with atomic concurrency handling
         $cacheKey = "conv_typing_{$conversationId}";
-        $typingList = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
-        if (! is_array($typingList)) {
-            $typingList = [];
-        }
+        try {
+            $lock = \Illuminate\Support\Facades\Cache::lock("lock_{$cacheKey}", 3);
+            $lock->block(2, function () use ($cacheKey, $actor, $isTyping) {
+                $typingList = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+                if (! is_array($typingList)) {
+                    $typingList = [];
+                }
 
-        if ($isTyping) {
-            $typingList[$actor->id] = [
-                'user_id' => $actor->id,
-                'user_name' => $actor->name,
-                'updated_at' => now()->timestamp,
-            ];
-        } else {
-            unset($typingList[$actor->id]);
-        }
+                if ($isTyping) {
+                    $typingList[$actor->id] = [
+                        'user_id' => $actor->id,
+                        'user_name' => $actor->name,
+                        'updated_at' => now()->timestamp,
+                    ];
+                } else {
+                    unset($typingList[$actor->id]);
+                }
 
-        $now = now()->timestamp;
-        $typingList = array_filter($typingList, fn ($item) => ($item['updated_at'] ?? 0) >= $now - 5);
-        \Illuminate\Support\Facades\Cache::put($cacheKey, $typingList, now()->addSeconds(6));
+                $now = now()->timestamp;
+                $typingList = array_filter($typingList, fn ($item) => ($item['updated_at'] ?? 0) >= $now - 5);
+                \Illuminate\Support\Facades\Cache::put($cacheKey, $typingList, now()->addSeconds(6));
+            });
+        } catch (\Throwable $e) {
+            $typingList = \Illuminate\Support\Facades\Cache::get($cacheKey, []);
+            if (! is_array($typingList)) $typingList = [];
+            if ($isTyping) {
+                $typingList[$actor->id] = [
+                    'user_id' => $actor->id,
+                    'user_name' => $actor->name,
+                    'updated_at' => now()->timestamp,
+                ];
+            } else {
+                unset($typingList[$actor->id]);
+            }
+            \Illuminate\Support\Facades\Cache::put($cacheKey, $typingList, now()->addSeconds(6));
+        }
 
         return $this->success(['is_typing' => $isTyping]);
     }

@@ -297,19 +297,6 @@ class ChatController extends Controller
             return $this->error('You do not have access to this conversation.', 403);
         }
 
-        // If it's a project conversation and actor is authorized but not in participants, ensure they are enrolled
-        if ($conversation->isProject() && ! $conversation->participants->contains('user_id', $actor->id)) {
-            \App\Models\ConversationParticipant::firstOrCreate([
-                'conversation_id' => $conversation->id,
-                'user_id' => $actor->id,
-            ], [
-                'role' => ($actor->id === $conversation->project?->team_lead_id || $actor->id === $conversation->project?->manager_id)
-                    ? \App\Models\ConversationParticipant::ROLE_ADMIN
-                    : \App\Models\ConversationParticipant::ROLE_MEMBER,
-            ]);
-            $conversation->load('participants.user.role');
-        }
-
         return $this->success(
             new ConversationResource($conversation),
             'Conversation details loaded'
@@ -325,23 +312,46 @@ class ChatController extends Controller
 
         $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
 
+        if (! $conversation->isGroup()) {
+            return $this->error('Only group conversation settings can be modified.', 422);
+        }
+
         if (! $this->accessControl->canManageConversation($actor, $conversation)) {
             return $this->error('You do not have permission to manage this conversation.', 403);
         }
 
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:255'],
+            'avatar_upload_id' => ['nullable', 'integer'],
             'avatar_url' => ['nullable', 'string', 'max:2048'],
             'allow_member_invites' => ['nullable', 'boolean'],
             'max_participants' => ['nullable', 'integer', 'min:2', 'max:500'],
         ]);
 
-        $conversation->update(array_filter([
-            'title' => $validated['title'] ?? null,
-            'avatar_url' => $validated['avatar_url'] ?? null,
-            'allow_member_invites' => $validated['allow_member_invites'] ?? null,
-            'max_participants' => $validated['max_participants'] ?? null,
-        ], fn ($val) => $val !== null));
+        $updates = [];
+        if ($request->has('title')) {
+            $updates['title'] = $validated['title'];
+        }
+        if ($request->has('avatar_upload_id')) {
+            if ($uploadId = $validated['avatar_upload_id']) {
+                $upload = \App\Models\Upload::where('company_id', $actor->company_id)
+                    ->where('user_id', $actor->id)
+                    ->findOrFail($uploadId);
+                $updates['avatar_url'] = $upload->file_path;
+            } else {
+                $updates['avatar_url'] = null;
+            }
+        } elseif ($request->has('avatar_url')) {
+            $updates['avatar_url'] = $validated['avatar_url'];
+        }
+        if ($request->has('allow_member_invites')) {
+            $updates['allow_member_invites'] = $request->boolean('allow_member_invites');
+        }
+        if ($request->has('max_participants')) {
+            $updates['max_participants'] = $validated['max_participants'];
+        }
+
+        $conversation->update($updates);
 
         return $this->success(
             new ConversationResource($conversation->fresh(['participants.user.role', 'latestMessage.user'])),
@@ -357,6 +367,10 @@ class ChatController extends Controller
         $actor = $request->user();
 
         $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
+
+        if (! $conversation->isGroup()) {
+            return $this->error('Participant additions are only supported for group conversations.', 422);
+        }
 
         $isParticipant = $conversation->participants()->where('user_id', $actor->id)->exists();
         $isAdmin = $conversation->participants()
@@ -413,6 +427,10 @@ class ChatController extends Controller
         $actor = $request->user();
 
         $conversation = Conversation::where('company_id', $actor->company_id)->findOrFail($id);
+
+        if (! $conversation->isGroup()) {
+            return $this->error('Participant removals are only supported for group conversations.', 422);
+        }
 
         $isSelf = (int) $actor->id === $userId;
         $canManage = $this->accessControl->canManageConversation($actor, $conversation);

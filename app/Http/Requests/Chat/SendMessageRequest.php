@@ -23,11 +23,7 @@ class SendMessageRequest extends FormRequest
             'reply_to_id' => ['nullable', 'integer'],
             'task_id' => ['nullable', 'integer'],
             'attachments' => ['nullable', 'array', 'max:10'],
-            'attachments.*.upload_id' => ['nullable', 'integer'],
-            'attachments.*.file_path' => ['nullable', 'string'],
-            'attachments.*.file_name' => ['nullable', 'string'],
-            'attachments.*.file_size' => ['nullable', 'integer'],
-            'attachments.*.mime_type' => ['nullable', 'string'],
+            'attachments.*.upload_id' => ['required', 'integer'],
             'mentions' => ['nullable', 'array'],
             'mentions.*' => ['integer'],
         ];
@@ -63,7 +59,7 @@ class SendMessageRequest extends FormRequest
                 }
             }
 
-            // 2. Cross-company and cross-project validation: task_id
+            // 2. Cross-company and cross-project validation: task_id with canAccessTask permission check
             if ($taskId = $this->input('task_id')) {
                 $task = Task::where('id', $taskId)
                     ->where('company_id', $actor->company_id)
@@ -73,35 +69,32 @@ class SendMessageRequest extends FormRequest
                     $v->errors()->add('task_id', 'The selected task does not exist or does not belong to your company.');
                 } elseif ($conversation && $conversation->isProject() && (int) $task->project_id !== (int) $conversation->project_id) {
                     $v->errors()->add('task_id', 'The selected task does not belong to this project.');
+                } elseif (! app(\App\Services\AccessControl::class)->canAccessTask($actor, $task)) {
+                    $v->errors()->add('task_id', 'You do not have permission to view or link this task.');
                 }
             }
 
-            // 3. Server verification of attachments
+            // 3. Server verification of attachments: must specify valid upload_id owned by sender
             if ($hasAttachments) {
                 foreach ($attachments as $index => $att) {
                     $uploadId = $att['upload_id'] ?? null;
-                    $filePath = $att['file_path'] ?? null;
-
-                    $query = Upload::where('company_id', $actor->company_id)
-                        ->where('user_id', $actor->id);
-
-                    if ($uploadId) {
-                        $query->where('id', (int) $uploadId);
-                    } elseif ($filePath) {
-                        $query->where('file_path', $filePath);
-                    } else {
-                        $v->errors()->add("attachments.{$index}", 'Attachment must specify upload_id or file_path.');
+                    if (! $uploadId) {
+                        $v->errors()->add("attachments.{$index}", 'Attachment must specify upload_id.');
                         continue;
                     }
 
-                    $upload = $query->first();
+                    $upload = Upload::where('company_id', $actor->company_id)
+                        ->where('user_id', $actor->id)
+                        ->where('id', (int) $uploadId)
+                        ->first();
+
                     if (! $upload) {
-                        $v->errors()->add("attachments.{$index}", 'Attachment path or ID is invalid or was not uploaded by you.');
+                        $v->errors()->add("attachments.{$index}", 'Attachment upload ID is invalid or was not uploaded by you.');
                     }
                 }
             }
 
-            // 4. Validate mentions belong to company
+            // 4. Validate mentions belong to company, are active, AND are participants in this conversation
             if ($mentions = $this->input('mentions')) {
                 $validCount = User::where('company_id', $actor->company_id)
                     ->where('is_active', true)
@@ -110,6 +103,14 @@ class SendMessageRequest extends FormRequest
 
                 if ($validCount !== count(array_unique($mentions))) {
                     $v->errors()->add('mentions', 'One or more mentioned users are invalid or not in your company.');
+                } elseif ($conversation) {
+                    $participantIds = $conversation->participants()->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+                    foreach ($mentions as $mId) {
+                        if (! in_array((int) $mId, $participantIds, true)) {
+                            $v->errors()->add('mentions', 'Mentioned users must be participants in this conversation.');
+                            break;
+                        }
+                    }
                 }
             }
         });

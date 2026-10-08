@@ -76,32 +76,35 @@ class UploadController extends Controller
 
         $upload = Upload::where('company_id', $actor->company_id)->findOrFail($uploadId);
 
-        // Access check: owner can download; or anyone in conversation where attachment is linked
+        // Access check: owner can download; or anyone in any conversation where attachment is linked
         if ((int) $upload->user_id !== (int) $actor->id) {
-            $attachment = ChatAttachment::where('file_path', $upload->file_path)->first();
-            if ($attachment && $attachment->message && $attachment->message->conversation) {
-                if (! $this->accessControl->canAccessConversation($actor, $attachment->message->conversation)) {
-                    return $this->error('You do not have access to this upload.', 403);
-                }
-            } else {
+            $hasAccess = ChatAttachment::where('file_path', $upload->file_path)
+                ->whereHas('message', function ($msgQ) use ($actor) {
+                    $msgQ->whereHas('conversation', function ($convQ) use ($actor) {
+                        $convQ->where('company_id', $actor->company_id);
+                    });
+                })
+                ->get()
+                ->contains(function ($attachment) use ($actor) {
+                    return $attachment->message && $attachment->message->conversation
+                        && $this->accessControl->canAccessConversation($actor, $attachment->message->conversation);
+                });
+
+            if (! $hasAccess) {
                 return $this->error('You do not have access to this upload.', 403);
             }
         }
 
         $disk = Storage::disk($upload->disk ?: 'local');
         if (! $disk->exists($upload->file_path)) {
-            // Check public disk fallback
-            if (Storage::disk('public')->exists($upload->file_path)) {
-                $disk = Storage::disk('public');
-            } else {
-                return $this->error('File not found on storage disk.', 404);
-            }
+            return $this->error('File not found on storage disk.', 404);
         }
 
         if ($request->boolean('preview') || $request->query('inline')) {
             $headers = [
                 'Content-Type' => $upload->mime_type ?: 'application/octet-stream',
                 'Content-Disposition' => 'inline; filename="' . addslashes($upload->file_name) . '"',
+                'X-Content-Type-Options' => 'nosniff',
             ];
             return Storage::disk($upload->disk ?: 'local')->response($upload->file_path, $upload->file_name, $headers);
         }

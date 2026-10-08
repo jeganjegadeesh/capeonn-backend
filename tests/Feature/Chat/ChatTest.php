@@ -216,7 +216,7 @@ class ChatTest extends TestCase
         $convRes = $this->postJson('/api/v1/conversations/direct', ['user_id' => $this->user2->id]);
         $convId = $convRes->json('data.id');
 
-        \App\Models\Upload::create([
+        $upload = \App\Models\Upload::create([
             'company_id' => $this->company->id,
             'user_id' => $this->user1->id,
             'file_path' => 'uploads/spec.pdf',
@@ -230,7 +230,7 @@ class ChatTest extends TestCase
             'task_id' => $task->id,
             'attachments' => [
                 [
-                    'file_path' => 'uploads/spec.pdf',
+                    'upload_id' => $upload->id,
                     'file_name' => 'spec.pdf',
                     'file_size' => 102400,
                     'mime_type' => 'application/pdf',

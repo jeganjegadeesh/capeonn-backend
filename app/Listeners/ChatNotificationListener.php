@@ -5,10 +5,19 @@ namespace App\Listeners;
 use App\Events\Chat\MessageSentEvent;
 use App\Models\ConversationParticipant;
 use App\Models\Notification;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Str;
 
-class ChatNotificationListener
+class ChatNotificationListener implements ShouldQueue
 {
+    use InteractsWithQueue;
+
+    public function handle(MessageSentEvent $event): void
+    {
+        $this->handleMessageSent($event);
+    }
+
     public function handleMessageSent(MessageSentEvent $event): void
     {
         $message = $event->message;
@@ -41,7 +50,7 @@ class ChatNotificationListener
             ]);
         }
 
-        // 2. Process general message notification for non-muted participants
+        // 2. Process general message notifications: collapsed to 1 unread row per conversation
         $participants = ConversationParticipant::where('conversation_id', $conversation->id)
             ->where('user_id', '!=', $sender?->id)
             ->whereNotIn('user_id', $mentionedUserIds)
@@ -51,17 +60,38 @@ class ChatNotificationListener
         $convTitle = $conversation->title ?? ($conversation->isDirect() ? ($sender?->name ?? 'Direct Chat') : 'Group Chat');
 
         foreach ($participants as $p) {
-            Notification::create([
-                'company_id' => $companyId,
-                'user_id'    => $p->user_id,
-                'type'       => 'chat_message',
-                'title'      => 'New message in ' . $convTitle,
-                'message'    => ($sender?->name ?? 'Colleague') . ": {$snippet}",
-                'data'       => [
-                    'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
-                ],
-            ]);
+            // Find existing unread notification for this conversation
+            $existing = Notification::where('user_id', $p->user_id)
+                ->where('type', 'chat_message')
+                ->where('data->conversation_id', $conversation->id)
+                ->whereNull('read_at')
+                ->first();
+
+            if ($existing) {
+                $data = $existing->data ?? [];
+                $unreadCount = ((int) ($data['unread_count'] ?? 1)) + 1;
+                $data['unread_count'] = $unreadCount;
+                $data['message_id'] = $message->id;
+
+                $existing->update([
+                    'message' => ($sender?->name ?? 'Colleague') . ": {$snippet}",
+                    'data' => $data,
+                    'updated_at' => now(),
+                ]);
+            } else {
+                Notification::create([
+                    'company_id' => $companyId,
+                    'user_id'    => $p->user_id,
+                    'type'       => 'chat_message',
+                    'title'      => 'New message in ' . $convTitle,
+                    'message'    => ($sender?->name ?? 'Colleague') . ": {$snippet}",
+                    'data'       => [
+                        'conversation_id' => $conversation->id,
+                        'message_id'      => $message->id,
+                        'unread_count'    => 1,
+                    ],
+                ]);
+            }
         }
     }
 }
