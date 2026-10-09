@@ -62,4 +62,14 @@ class TaskComment extends Model
     {
         return $this->belongsToMany(User::class, 'task_comment_mentions')->withTimestamps();
     }
+
+    public function edits(): HasMany
+    {
+        return $this->hasMany(TaskCommentEdit::class, 'task_comment_id')->orderBy('created_at', 'asc');
+    }
+
+    public function attachmentFiles(): HasMany
+    {
+        return $this->hasMany(TaskCommentAttachment::class, 'task_comment_id');
+    }
 }

@@ -178,6 +178,9 @@ Route::prefix('v1')->group(function () {
         Route::prefix('projects')->group(function () {
             Route::get('/dashboard', [ProjectController::class, 'dashboard'])->middleware('permission:projects.view');
 
+            Route::get('/activities', [ProjectController::class, 'allActivities'])->middleware('permission:projects.activity');
+            Route::get('/activities/export', [ProjectController::class, 'exportActivities'])->middleware('permission:projects.activity');
+
             Route::middleware('permission:projects.view')->group(function () {
                 Route::get('/', [ProjectController::class, 'index']);
                 Route::get('/{project}', [ProjectController::class, 'show']);
@@ -252,9 +255,11 @@ Route::prefix('v1')->group(function () {
 
             // Phase 7 Task Comments
             Route::get('/{task}/comments', [TaskCommentController::class, 'index'])->middleware('permission:tasks.view');
-            Route::post('/{task}/comments', [TaskCommentController::class, 'store'])->middleware('permission:tasks.view');
+            Route::post('/{task}/comments', [TaskCommentController::class, 'store'])->middleware(['permission:tasks.view', 'throttle:30,1']);
             Route::put('/{task}/comments/{comment}', [TaskCommentController::class, 'update'])->middleware('permission:tasks.view');
             Route::delete('/{task}/comments/{comment}', [TaskCommentController::class, 'destroy'])->middleware('permission:tasks.view');
+            Route::get('/{task}/comments/{comment}/history', [TaskCommentController::class, 'history'])->middleware('permission:tasks.view');
+            Route::get('/{task}/comments/{comment}/attachments/{attachment}/download', [TaskCommentController::class, 'downloadAttachment'])->middleware('permission:tasks.view');
 
             // Timer & manual time entries
             Route::post('/{task}/timer/start', [TimeEntryController::class, 'startTimer'])->middleware('permission:time.track');
@@ -321,6 +326,12 @@ Route::prefix('v1')->group(function () {
             Route::post('/read-all', [NotificationController::class, 'markAllRead']);
             Route::post('/{id}/read', [NotificationController::class, 'markRead']);
             Route::delete('/{id}', [NotificationController::class, 'destroy']);
+        });
+
+        // ---- Global Audit Activities (Phase 7 Review item 71) ----
+        Route::prefix('admin/activities')->middleware('permission:projects.activity')->group(function () {
+            Route::get('/', [ProjectController::class, 'allActivities']);
+            Route::get('/export', [ProjectController::class, 'exportActivities']);
         });
 
         // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----

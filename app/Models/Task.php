@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Task extends Model
@@ -62,6 +63,9 @@ class Task extends Model
         'actual_hours',
         'started_at',
         'completed_at',
+        'submitted_by_id',
+        'submitted_at',
+        'reviewer_id',
     ];
 
     protected function casts(): array
@@ -72,6 +76,7 @@ class Task extends Model
             'actual_hours' => 'decimal:2',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
+            'submitted_at' => 'datetime',
         ];
     }
 
@@ -133,6 +138,26 @@ class Task extends Model
     public function allComments(): HasMany
     {
         return $this->hasMany(TaskComment::class)->orderBy('id', 'asc');
+    }
+
+    public function submittedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'submitted_by_id');
+    }
+
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewer_id');
+    }
+
+    public function reviews(): HasMany
+    {
+        return $this->hasMany(TaskReview::class)->orderBy('round_number', 'asc');
+    }
+
+    public function latestReview(): HasOne
+    {
+        return $this->hasOne(TaskReview::class)->latestOfMany('round_number');
     }
 
     public function getIsOverdueAttribute(): bool

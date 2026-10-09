@@ -18,8 +18,20 @@ class TaskCommentResource extends JsonResource
             'user_id' => $this->user_id,
             'parent_id' => $this->parent_id,
             'comment' => $this->comment,
-            'attachments' => $this->attachments ?? [],
+            'attachments' => $this->relationLoaded('attachmentFiles') && $this->attachmentFiles->isNotEmpty()
+                ? $this->attachmentFiles->map(fn ($att) => [
+                    'id' => $att->id,
+                    'file_name' => $att->file_name,
+                    'file_size' => $att->file_size,
+                    'mime_type' => $att->mime_type,
+                    'url' => $att->url,
+                    'download_url' => $att->download_url,
+                    'is_image' => $att->is_image,
+                    'is_pdf' => $att->is_pdf,
+                ])->values()
+                : ($this->attachments ?? []),
             'is_edited' => (bool) $this->is_edited,
+            'edits_count' => $this->relationLoaded('edits') ? $this->edits->count() : ($this->is_edited ? 1 : 0),
             'edited_at' => $this->edited_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),

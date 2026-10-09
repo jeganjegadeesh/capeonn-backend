@@ -30,6 +30,18 @@ class TaskNotificationListener
                 'data'       => ['task_id' => $event->task->id, 'project_id' => $event->task->project_id],
             ]);
         }
+
+        // Also notify the previous assignee that the task was reassigned
+        if ($event->previousAssignee && (int) $event->previousAssignee->id !== (int) $event->actor->id) {
+            Notification::create([
+                'company_id' => $event->task->company_id,
+                'user_id'    => $event->previousAssignee->id,
+                'type'       => 'task_reassigned',
+                'title'      => 'Task Handover / Reassigned',
+                'message'    => "Task '{$event->task->title}' was reassigned by {$event->actor->name}." . ($event->reason ? " Reason: {$event->reason}" : ''),
+                'data'       => ['task_id' => $event->task->id, 'project_id' => $event->task->project_id],
+            ]);
+        }
     }
 
     public function handleTaskSubmittedForReview(TaskSubmittedForReviewEvent $event): void
@@ -38,10 +50,10 @@ class TaskNotificationListener
         $recipients = array_filter(array_unique([$project->team_lead_id, $project->manager_id]));
 
         foreach ($recipients as $userId) {
-            if ($userId !== $event->actor->id) {
+            if ((int) $userId !== (int) $event->actor->id) {
                 Notification::create([
                     'company_id' => $event->task->company_id,
-                    'user_id'    => $userId,
+                    'user_id'    => (int) $userId,
                     'type'       => 'task_review',
                     'title'      => 'Task Ready for Review',
                     'message'    => "Task '{$event->task->title}' was submitted for review by {$event->actor->name}.",
@@ -53,14 +65,14 @@ class TaskNotificationListener
 
     public function handleTaskChangesRequested(TaskChangesRequestedEvent $event): void
     {
-        if ($event->task->assigned_to_id && $event->task->assigned_to_id !== $event->actor->id) {
+        if ($event->task->assigned_to_id && (int) $event->task->assigned_to_id !== (int) $event->actor->id) {
             Notification::create([
                 'company_id' => $event->task->company_id,
-                'user_id'    => $event->task->assigned_to_id,
+                'user_id'    => (int) $event->task->assigned_to_id,
                 'type'       => 'task_changes_requested',
                 'title'      => 'Changes Requested on Task',
                 'message'    => "Changes were requested on task '{$event->task->title}': {$event->reason}",
-                'data'       => ['task_id' => $event->task->id, 'reason' => $event->reason],
+                'data'       => ['task_id' => $event->task->id, 'reason' => $event->reason, 'project_id' => $event->task->project_id],
             ]);
         }
     }
@@ -69,18 +81,19 @@ class TaskNotificationListener
     {
         $recipients = array_filter(array_unique([
             $event->task->assigned_to_id,
+            $event->task->submitted_by_id,
             $event->task->project->team_lead_id,
         ]));
 
         foreach ($recipients as $userId) {
-            if ($userId !== $event->actor->id) {
+            if ((int) $userId !== (int) $event->actor->id) {
                 Notification::create([
                     'company_id' => $event->task->company_id,
-                    'user_id'    => $userId,
+                    'user_id'    => (int) $userId,
                     'type'       => 'task_completed',
                     'title'      => 'Task Completed',
                     'message'    => "Task '{$event->task->title}' was approved and completed by {$event->actor->name}.",
-                    'data'       => ['task_id' => $event->task->id],
+                    'data'       => ['task_id' => $event->task->id, 'project_id' => $event->task->project_id],
                 ]);
             }
         }
@@ -88,14 +101,14 @@ class TaskNotificationListener
 
     public function handleTaskReopened(TaskReopenedEvent $event): void
     {
-        if ($event->task->assigned_to_id && $event->task->assigned_to_id !== $event->actor->id) {
+        if ($event->task->assigned_to_id && (int) $event->task->assigned_to_id !== (int) $event->actor->id) {
             Notification::create([
                 'company_id' => $event->task->company_id,
-                'user_id'    => $event->task->assigned_to_id,
+                'user_id'    => (int) $event->task->assigned_to_id,
                 'type'       => 'task_reopened',
                 'title'      => 'Task Reopened',
                 'message'    => "Task '{$event->task->title}' was reopened: {$event->reason}",
-                'data'       => ['task_id' => $event->task->id, 'reason' => $event->reason],
+                'data'       => ['task_id' => $event->task->id, 'reason' => $event->reason, 'project_id' => $event->task->project_id],
             ]);
         }
     }
@@ -148,6 +161,10 @@ class TaskNotificationListener
 
         if ($project && $project->team_lead_id && (int) $project->team_lead_id !== (int) $event->actor->id) {
             $recipients->push((int) $project->team_lead_id);
+        }
+
+        if ($project && $project->manager_id && (int) $project->manager_id !== (int) $event->actor->id) {
+            $recipients->push((int) $project->manager_id);
         }
 
         if ($comment->parent_id && $comment->parent && (int) $comment->parent->user_id !== (int) $event->actor->id) {

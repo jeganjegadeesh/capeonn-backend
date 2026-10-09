@@ -32,11 +32,16 @@ class TaskController extends Controller
     private const WITH = [
         'assignedTo:id,name,email,employee_code',
         'createdBy:id,name',
+        'submittedBy:id,name,email',
+        'reviewer:id,name',
+        'latestReview',
         'timeEntries',
     ];
 
-    public function __construct(private AccessControl $access)
-    {
+    public function __construct(
+        private AccessControl $access,
+        private \App\Services\TaskWorkflowService $workflow,
+    ) {
     }
 
     /**
@@ -506,127 +511,48 @@ class TaskController extends Controller
             ], 422);
         }
 
-        // Review -> Completed approval rules (for parent tasks):
-        // 1. Nobody should approve their own task
-        // 2. Only Team Lead, Manager, or Admin can approve
-        if ($newStatus === Task::STATUS_COMPLETED && ! $isSubtask) {
+        if ($newStatus === Task::STATUS_COMPLETED) {
             if ((int) $task->assigned_to_id === (int) $actor->id) {
                 return response()->json([
                     'message' => 'Assignees cannot approve their own work.',
                 ], 403);
             }
 
-            if (! $this->access->canManageTask($actor, $task)) {
+            if ($task->submitted_by_id !== null && (int) $task->submitted_by_id === (int) $actor->id) {
                 return response()->json([
-                    'message' => 'Only a Team Lead, Manager, or Admin can approve and complete tasks.',
+                    'message' => 'Task submitters cannot approve their own work.',
                 ], 403);
-            }
-
-            // Subtask completion validation
-            $incompleteCount = $task->subtasks()->where('status', '!=', Task::STATUS_COMPLETED)->count();
-            if ($incompleteCount > 0) {
-                return response()->json([
-                    'message' => "Cannot complete task: {$incompleteCount} subtask(s) are still incomplete.",
-                ], 422);
             }
         }
 
-        // Review -> Changes Required rules:
-        // 1. Only Team Lead, Manager, or Admin can request changes
-        // 2. Requires reason
-        if ($newStatus === Task::STATUS_CHANGES_REQUIRED) {
+        if (in_array($newStatus, [Task::STATUS_COMPLETED, Task::STATUS_CHANGES_REQUIRED], true)) {
             if (! $this->access->canManageTask($actor, $task)) {
                 return response()->json([
-                    'message' => 'Only a Team Lead, Manager, or Admin can request changes on tasks.',
+                    'message' => 'Only a Team Lead, Manager, or Admin can review or approve tasks.',
                 ], 403);
-            }
-
-            if (empty(trim((string) $reason))) {
-                return response()->json([
-                    'message' => 'A reason is required when requesting changes.',
-                ], 422);
             }
         }
 
-        // Reopening completed task rules:
-        // 1. Only Team Lead, Manager, or Admin
-        // 2. Requires reason
         if ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS) {
             if (! $this->access->canManageTask($actor, $task)) {
                 return response()->json([
                     'message' => 'Only a Team Lead, Manager, or Admin can reopen a completed task.',
                 ], 403);
             }
-
-            if (empty(trim((string) $reason))) {
-                return response()->json([
-                    'message' => 'A reason is required to reopen a completed task.',
-                ], 422);
-            }
         }
 
-        DB::transaction(function () use ($task, $actor, $oldStatus, $newStatus, $reason) {
-            $updates = ['status' => $newStatus];
+        try {
+            $task = $this->workflow->transitionStatus($task, $actor, $newStatus, $reason);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $firstMessage = collect($errors)->flatten()->first() ?? $e->getMessage();
 
-            if ($newStatus === Task::STATUS_IN_PROGRESS && $task->started_at === null) {
-                $updates['started_at'] = now();
-            }
-
-            if ($newStatus === Task::STATUS_COMPLETED) {
-                $updates['completed_at'] = now();
-
-                // Stop any running timers on this task
-                foreach ($task->timeEntries()->running()->get() as $runningEntry) {
-                    $runningEntry->stop();
-                }
-            } elseif ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS) {
-                // Re-opening task
-                $updates['completed_at'] = null;
-            }
-
-            $task->update($updates);
-
-            // Distinct activity action
-            $action = match ($newStatus) {
-                Task::STATUS_REVIEW           => 'task_submitted_for_review',
-                Task::STATUS_CHANGES_REQUIRED => 'task_changes_requested',
-                Task::STATUS_COMPLETED        => 'task_completed',
-                default                       => ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS)
-                    ? 'task_reopened'
-                    : 'task_status_changed',
-            };
-
-            $desc = match ($action) {
-                'task_submitted_for_review' => "Task '{$task->title}' was submitted for review by {$actor->name}.",
-                'task_changes_requested'    => "Changes were requested on task '{$task->title}' by {$actor->name}: {$reason}",
-                'task_completed'            => "Task '{$task->title}' was approved and completed by {$actor->name}.",
-                'task_reopened'             => "Task '{$task->title}' was reopened by {$actor->name}: {$reason}",
-                default                     => "Task '{$task->title}' status changed from '{$oldStatus}' to '{$newStatus}' by {$actor->name}.",
-            };
-
-            // Audit activity log
-            $task->project->recordActivity(
-                action: $action,
-                description: $desc,
-                userId: $actor->id,
-                field: 'status',
-                oldValue: $oldStatus,
-                newValue: $newStatus,
-                reason: $reason,
-                taskId: $task->id,
-            );
-
-            // Fire corresponding task events
-            if ($newStatus === Task::STATUS_REVIEW) {
-                TaskSubmittedForReviewEvent::dispatch($task, $actor, $reason);
-            } elseif ($newStatus === Task::STATUS_CHANGES_REQUIRED) {
-                TaskChangesRequestedEvent::dispatch($task, $actor, (string) $reason);
-            } elseif ($newStatus === Task::STATUS_COMPLETED) {
-                TaskCompletedEvent::dispatch($task, $actor, $reason);
-            } elseif ($oldStatus === Task::STATUS_COMPLETED && $newStatus === Task::STATUS_IN_PROGRESS) {
-                TaskReopenedEvent::dispatch($task, $actor, (string) $reason);
-            }
-        });
+            return response()->json([
+                'success' => false,
+                'message' => $firstMessage,
+                'errors'  => $errors,
+            ], 422);
+        }
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -650,68 +576,10 @@ class TaskController extends Controller
             ], 403);
         }
 
-        if (! $task->project->acceptsWork()) {
-            return response()->json([
-                'message' => "Project status [{$task->project->status}] does not accept task modifications.",
-            ], 422);
-        }
-
-        $oldAssigneeId = $task->assigned_to_id;
         $newAssigneeId = $request->input('assigned_to_id');
         $reason = $request->input('reason');
 
-        if ((int) $oldAssigneeId === (int) $newAssigneeId) {
-            return response()->json([
-                'message' => 'Task already has this assignment.',
-                'data'    => TaskResource::make($task->load(self::WITH)->loadCount('subtasks')),
-            ]);
-        }
-
-        DB::transaction(function () use ($task, $actor, $oldAssigneeId, $newAssigneeId, $reason) {
-            // Stop any running timer for previous assignee
-            if ($oldAssigneeId) {
-                $runningEntries = $task->timeEntries()->running()->where('user_id', $oldAssigneeId)->get();
-                foreach ($runningEntries as $re) {
-                    $re->stop();
-                    $task->project->recordActivity(
-                        action: 'timer_stopped',
-                        description: "Running timer on task '{$task->title}' for previous assignee was automatically stopped upon reassignment.",
-                        userId: $actor->id,
-                        taskId: $task->id,
-                    );
-                }
-            }
-
-            $updates = ['assigned_to_id' => $newAssigneeId];
-
-            if ($newAssigneeId && $task->status === Task::STATUS_BACKLOG) {
-                $updates['status'] = Task::STATUS_ASSIGNED;
-            } elseif (! $newAssigneeId && $task->status === Task::STATUS_ASSIGNED) {
-                $updates['status'] = Task::STATUS_BACKLOG;
-            }
-
-            $task->update($updates);
-
-            $newAssignee = $newAssigneeId ? User::find($newAssigneeId) : null;
-            $oldAssignee = $oldAssigneeId ? User::find($oldAssigneeId) : null;
-
-            $desc = $newAssignee
-                ? "Task '{$task->title}' assigned to {$newAssignee->name}."
-                : "Task '{$task->title}' was unassigned.";
-
-            $task->project->recordActivity(
-                action: 'task_assigned',
-                description: $desc,
-                userId: $actor->id,
-                field: 'assigned_to_id',
-                oldValue: (string) $oldAssigneeId,
-                newValue: (string) $newAssigneeId,
-                reason: $reason,
-                taskId: $task->id,
-            );
-
-            TaskAssignedEvent::dispatch($task, $newAssignee, $actor, $oldAssignee, $reason);
-        });
+        $task = $this->workflow->reassign($task, $actor, $newAssigneeId ? (int) $newAssigneeId : null, $reason);
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -962,30 +830,8 @@ class TaskController extends Controller
             return response()->json(['message' => 'You do not have permission to submit this task for review.'], 403);
         }
 
-        if ($task->status !== Task::STATUS_IN_PROGRESS && $task->status !== Task::STATUS_CHANGES_REQUIRED) {
-            return response()->json([
-                'message' => "Task cannot be submitted for review from status '{$task->status}'. Must be in 'in_progress' or 'changes_required'.",
-            ], 422);
-        }
-
         $notes = $request->input('notes') ?: $request->input('reason');
-
-        DB::transaction(function () use ($task, $actor, $notes) {
-            $oldStatus = $task->status;
-            $task->update(['status' => Task::STATUS_REVIEW]);
-
-            $task->project->recordActivity(
-                action: 'task_submitted_for_review',
-                description: "Task '{$task->title}' was submitted for review by {$actor->name}" . ($notes ? ": {$notes}" : '.'),
-                userId: $actor->id,
-                oldValue: $oldStatus,
-                newValue: Task::STATUS_REVIEW,
-                reason: $notes,
-                taskId: $task->id,
-            );
-
-            TaskSubmittedForReviewEvent::dispatch($task, $actor);
-        });
+        $task = $this->workflow->submitForReview($task, $actor, $notes);
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -998,7 +844,7 @@ class TaskController extends Controller
     /**
      * POST /tasks/{task}/approve
      * Team Lead, Manager, or Admin approves and completes a reviewed task.
-     * Enforces self-approval guard: Assignees CANNOT approve their own work!
+     * Enforces self-approval guard: Assignees and submitters CANNOT approve their own work!
      */
     public function approve(Request $request, Task $task): JsonResponse
     {
@@ -1008,55 +854,14 @@ class TaskController extends Controller
             return response()->json(['message' => 'Unauthorized task access.'], 403);
         }
 
-        if ($task->status !== Task::STATUS_REVIEW) {
-            return response()->json([
-                'message' => "Only tasks in 'review' status can be approved. Current status: '{$task->status}'.",
-            ], 422);
-        }
-
-        // Self-approval guard
-        if ((int) $task->assigned_to_id === (int) $actor->id) {
-            return response()->json([
-                'message' => 'Assignees cannot approve their own work.',
-            ], 403);
-        }
-
         if (! $this->access->canManageTask($actor, $task)) {
             return response()->json([
                 'message' => 'Only a Team Lead, Manager, or Admin can approve tasks.',
             ], 403);
         }
 
-        // Check subtask completion
-        $incompleteCount = $task->subtasks()->where('status', '!=', Task::STATUS_COMPLETED)->count();
-        if ($incompleteCount > 0) {
-            return response()->json([
-                'message' => "Cannot complete task: {$incompleteCount} subtask(s) are still incomplete.",
-            ], 422);
-        }
-
-        DB::transaction(function () use ($task, $actor) {
-            $task->update([
-                'status'       => Task::STATUS_COMPLETED,
-                'completed_at' => now(),
-            ]);
-
-            // Stop any running timers on this task
-            foreach ($task->timeEntries()->running()->get() as $runningEntry) {
-                $runningEntry->stop();
-            }
-
-            $task->project->recordActivity(
-                action: 'task_completed',
-                description: "Task '{$task->title}' was approved and completed by {$actor->name}.",
-                userId: $actor->id,
-                oldValue: Task::STATUS_REVIEW,
-                newValue: Task::STATUS_COMPLETED,
-                taskId: $task->id,
-            );
-
-            TaskCompletedEvent::dispatch($task, $actor);
-        });
+        $reason = $request->input('reason') ?: $request->input('notes');
+        $task = $this->workflow->approve($task, $actor, $reason);
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -1079,12 +884,6 @@ class TaskController extends Controller
             return response()->json(['message' => 'Unauthorized task access.'], 403);
         }
 
-        if ($task->status !== Task::STATUS_REVIEW) {
-            return response()->json([
-                'message' => "Changes can only be requested on tasks in 'review' status. Current status: '{$task->status}'.",
-            ], 422);
-        }
-
         if (! $this->access->canManageTask($actor, $task)) {
             return response()->json([
                 'message' => 'Only a Team Lead, Manager, or Admin can request changes.',
@@ -1094,23 +893,8 @@ class TaskController extends Controller
         $validated = $request->validate([
             'reason' => ['required', 'string', 'max:1000'],
         ]);
-        $reason = $validated['reason'];
 
-        DB::transaction(function () use ($task, $actor, $reason) {
-            $task->update(['status' => Task::STATUS_CHANGES_REQUIRED]);
-
-            $task->project->recordActivity(
-                action: 'task_changes_requested',
-                description: "Changes were requested on task '{$task->title}' by {$actor->name}: {$reason}",
-                userId: $actor->id,
-                oldValue: Task::STATUS_REVIEW,
-                newValue: Task::STATUS_CHANGES_REQUIRED,
-                reason: $reason,
-                taskId: $task->id,
-            );
-
-            TaskChangesRequestedEvent::dispatch($task, $actor, $reason);
-        });
+        $task = $this->workflow->requestChanges($task, $actor, $validated['reason']);
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -1133,12 +917,6 @@ class TaskController extends Controller
             return response()->json(['message' => 'Unauthorized task access.'], 403);
         }
 
-        if ($task->status !== Task::STATUS_COMPLETED) {
-            return response()->json([
-                'message' => "Only completed tasks can be reopened. Current status: '{$task->status}'.",
-            ], 422);
-        }
-
         if (! $this->access->canManageTask($actor, $task)) {
             return response()->json([
                 'message' => 'Only a Team Lead, Manager, or Admin can reopen completed tasks.',
@@ -1148,26 +926,8 @@ class TaskController extends Controller
         $validated = $request->validate([
             'reason' => ['required', 'string', 'max:1000'],
         ]);
-        $reason = $validated['reason'];
 
-        DB::transaction(function () use ($task, $actor, $reason) {
-            $task->update([
-                'status'       => Task::STATUS_IN_PROGRESS,
-                'completed_at' => null,
-            ]);
-
-            $task->project->recordActivity(
-                action: 'task_reopened',
-                description: "Task '{$task->title}' was reopened by {$actor->name}: {$reason}",
-                userId: $actor->id,
-                oldValue: Task::STATUS_COMPLETED,
-                newValue: Task::STATUS_IN_PROGRESS,
-                reason: $reason,
-                taskId: $task->id,
-            );
-
-            TaskReopenedEvent::dispatch($task, $actor, $reason);
-        });
+        $task = $this->workflow->reopen($task, $actor, $validated['reason']);
 
         $task->refresh()->load(self::WITH)->loadCount('subtasks');
 
@@ -1196,14 +956,31 @@ class TaskController extends Controller
 
         $query = Task::where('tasks.company_id', $actor->company_id)
             ->where('tasks.status', Task::STATUS_REVIEW)
+            ->whereHas('project', function ($p) {
+                $p->whereNotIn('projects.status', [
+                    Project::STATUS_CANCELLED,
+                    Project::STATUS_ARCHIVED,
+                    Project::STATUS_COMPLETED,
+                    Project::STATUS_ON_HOLD,
+                ]);
+            })
             ->with([
                 'project:id,name,code,department_id,team_lead_id,manager_id',
                 'assignedTo:id,name,email,employee_code',
                 'createdBy:id,name',
+                'submittedBy:id,name,email',
+                'latestReview',
             ])
             ->withCount('subtasks');
 
         if (! $actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            // Exclude viewer's own tasks (assignee or submitter cannot review own work)
+            $query->where('tasks.assigned_to_id', '!=', $actor->id)
+                ->where(function ($sub) use ($actor) {
+                    $sub->whereNull('tasks.submitted_by_id')
+                        ->orWhere('tasks.submitted_by_id', '!=', $actor->id);
+                });
+
             $query->whereHas('project', function ($p) use ($actor) {
                 $p->where(function ($sub) use ($actor) {
                     if ($actor->department_id !== null && $actor->scopeFor('tasks.manage') === Permission::SCOPE_DEPARTMENT) {
@@ -1224,7 +1001,9 @@ class TaskController extends Controller
         }
 
         $perPage = min(max((int) $request->query('per_page', 20), 1), 100);
-        $tasks = $query->orderBy('tasks.due_date', 'asc')->paginate($perPage);
+        $tasks = $query->orderByRaw('submitted_at IS NULL, submitted_at ASC')
+            ->orderBy('due_date', 'asc')
+            ->paginate($perPage);
 
         return response()->json([
             'data' => TaskResource::collection($tasks),
@@ -1270,7 +1049,7 @@ class TaskController extends Controller
         }
 
         $perPage = min(max((int) $request->query('per_page', 25), 1), 100);
-        $activities = $query->orderBy('created_at', 'desc')->paginate($perPage);
+        $activities = $query->orderBy('created_at', 'desc')->orderBy('id', 'desc')->paginate($perPage);
 
         return response()->json([
             'data' => ProjectActivityResource::collection($activities),

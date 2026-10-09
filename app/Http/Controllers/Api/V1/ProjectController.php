@@ -20,6 +20,7 @@ use App\Http\Resources\ProjectResource;
 use App\Models\LeaveRequest;
 use App\Models\Permission;
 use App\Models\Project;
+use App\Models\ProjectActivity;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\AccessControl;
@@ -979,6 +980,137 @@ class ProjectController extends Controller
             ->values()->all();
 
         return $this->paginated($paginator, $items);
+    }
+
+    /**
+     * Build base query for audit activities across the company.
+     */
+    private function buildActivitiesQuery(Request $request): \Illuminate\Database\Eloquent\Builder
+    {
+        $actor = $request->user();
+        $companyId = $this->companyId($request);
+
+        $query = ProjectActivity::query()
+            ->whereHas('project', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            })
+            ->with([
+                'user:id,name,email',
+                'project:id,name,code',
+                'task:id,title,code',
+            ]);
+
+        // If not super admin or admin, scope to projects user can view activity on
+        if (! $actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            $scope = $actor->scopeFor('projects.activity');
+            if ($scope === Permission::SCOPE_DEPARTMENT && $actor->department_id !== null) {
+                $query->whereHas('project', fn ($q) => $q->where('department_id', $actor->department_id));
+            } elseif ($scope === Permission::SCOPE_ASSIGNED) {
+                $query->whereHas('project', fn ($q) => $q->where('team_lead_id', $actor->id)->orWhere('manager_id', $actor->id));
+            }
+        }
+
+        if ($request->filled('project_id')) {
+            $query->where('project_id', (int) $request->query('project_id'));
+        }
+
+        if ($request->filled('task_id')) {
+            $query->where('task_id', (int) $request->query('task_id'));
+        }
+
+        if ($request->filled('action')) {
+            $actions = array_filter(explode(',', (string) $request->query('action')));
+            $query->whereIn('action', $actions);
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', (int) $request->query('user_id'));
+        }
+
+        if ($request->filled('from_date')) {
+            $query->whereDate('created_at', '>=', $request->query('from_date'));
+        }
+
+        if ($request->filled('to_date')) {
+            $query->whereDate('created_at', '<=', $request->query('to_date'));
+        }
+
+        return $query->orderByDesc('created_at')->orderByDesc('id');
+    }
+
+    /** GET /admin/activities */
+    public function allActivities(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        if (! $actor->hasPermission('projects.activity') && ! $actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            return $this->error('You do not have permission to view company audit activities.', 403);
+        }
+
+        $query = $this->buildActivitiesQuery($request);
+        $paginator = $query->paginate($this->perPage($request));
+
+        $items = $paginator->getCollection()
+            ->map(fn ($act) => (new ProjectActivityResource($act))->resolve())
+            ->values()->all();
+
+        return $this->paginated($paginator, $items);
+    }
+
+    /** GET /admin/activities/export */
+    public function exportActivities(Request $request): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $actor = $request->user();
+        if (! $actor->hasPermission('projects.activity') && ! $actor->hasRole(Role::SUPER_ADMIN, 'admin')) {
+            abort(403, 'You do not have permission to export company audit activities.');
+        }
+
+        $query = $this->buildActivitiesQuery($request);
+        $fileName = 'audit-activities-' . now()->format('Y-m-d_His') . '.csv';
+
+        return response()->streamDownload(function () use ($query) {
+            $handle = fopen('php://output', 'w');
+            fputcsv($handle, [
+                'ID',
+                'Date',
+                'Project Code',
+                'Project Name',
+                'Task Code',
+                'Task Title',
+                'User Name',
+                'User Email',
+                'Action',
+                'Field',
+                'Old Value',
+                'New Value',
+                'Description',
+                'Reason',
+            ]);
+
+            $query->chunk(200, function ($activities) use ($handle) {
+                foreach ($activities as $act) {
+                    fputcsv($handle, [
+                        $act->id,
+                        $act->created_at?->toIso8601String(),
+                        $act->project?->code,
+                        $act->project?->name,
+                        $act->task?->code,
+                        $act->task?->title,
+                        $act->user?->name,
+                        $act->user?->email,
+                        $act->action,
+                        $act->field,
+                        $act->old_value,
+                        $act->new_value,
+                        $act->description,
+                        $act->reason,
+                    ]);
+                }
+            });
+
+            fclose($handle);
+        }, $fileName, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
     }
 
     private function findProjectForActor(Request $request, int $id, string $permission): Project

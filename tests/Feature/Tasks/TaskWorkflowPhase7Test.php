@@ -17,6 +17,7 @@ use App\Models\TimeEntry;
 use App\Models\User;
 use Database\Seeders\RolePermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -404,5 +405,333 @@ class TaskWorkflowPhase7Test extends TestCase
         $res->assertStatus(200);
         $res->assertJsonPath('meta.total', 1);
         $res->assertJsonPath('data.0.action', 'task_submitted_for_review');
+    }
+
+    /**
+     * 12. Comment edit and delete by user removed from project are rejected.
+     */
+    public function test_comment_edit_and_delete_by_user_removed_from_project_are_rejected(): void
+    {
+        $comment = TaskComment::create([
+            'company_id' => $this->company->id,
+            'task_id'    => $this->task->id,
+            'user_id'    => $this->employee1->id,
+            'comment'    => 'Original comment text',
+        ]);
+
+        // Remove employee1 from project
+        $this->project->members()->detach($this->employee1->id);
+
+        Sanctum::actingAs($this->employee1);
+
+        $editRes = $this->putJson("/api/v1/tasks/{$this->task->id}/comments/{$comment->id}", [
+            'comment' => 'Attempted unauthorized edit',
+        ]);
+        $editRes->assertStatus(403);
+
+        $delRes = $this->deleteJson("/api/v1/tasks/{$this->task->id}/comments/{$comment->id}");
+        $delRes->assertStatus(403);
+    }
+
+    /**
+     * 13. Commenting on an archived project is rejected.
+     */
+    public function test_commenting_on_archived_project_is_rejected(): void
+    {
+        $this->project->update(['status' => Project::STATUS_ARCHIVED]);
+
+        Sanctum::actingAs($this->employee1);
+
+        $res = $this->postJson("/api/v1/tasks/{$this->task->id}/comments", [
+            'comment' => 'Posting on archived project',
+        ]);
+        $res->assertStatus(422);
+    }
+
+    /**
+     * 14. Mention of someone without task access is rejected and creates no notification.
+     */
+    public function test_mention_of_user_without_task_access_is_rejected(): void
+    {
+        $empRole = Role::where('slug', Role::EMPLOYEE)->firstOrFail();
+        $outsider = User::factory()->create([
+            'company_id'    => $this->company->id,
+            'department_id' => $this->department->id,
+            'role_id'       => $empRole->id,
+            'name'          => 'Outsider User',
+            'is_active'     => true,
+        ]);
+
+        Sanctum::actingAs($this->employee1);
+
+        $res = $this->postJson("/api/v1/tasks/{$this->task->id}/comments", [
+            'comment'  => 'Hey @Outsider check this',
+            'mentions' => [$outsider->id],
+        ]);
+        $res->assertStatus(422);
+        $res->assertJsonFragment([
+            'message' => "Mentioned user '{$outsider->name}' does not have access to this task.",
+        ]);
+    }
+
+    /**
+     * 15. A comment attachment with an unknown upload_id is rejected.
+     */
+    public function test_comment_attachment_with_unknown_upload_id_is_rejected(): void
+    {
+        Sanctum::actingAs($this->employee1);
+
+        $res = $this->postJson("/api/v1/tasks/{$this->task->id}/comments", [
+            'comment'     => 'Comment with bogus attachment',
+            'attachments' => [999999],
+        ]);
+        $res->assertStatus(422);
+    }
+
+    /**
+     * 16. Two simultaneous review decisions: only one succeeds.
+     */
+    public function test_concurrent_review_decisions_only_one_succeeds(): void
+    {
+        $this->task->update(['status' => Task::STATUS_REVIEW]);
+
+        Sanctum::actingAs($this->teamLead);
+
+        // First decision: approve
+        $first = $this->postJson("/api/v1/tasks/{$this->task->id}/approve");
+        $first->assertStatus(200);
+
+        // Second decision attempt while task is now completed
+        $second = $this->postJson("/api/v1/tasks/{$this->task->id}/request-changes", [
+            'reason' => 'Too late to request changes',
+        ]);
+        $second->assertStatus(422);
+    }
+
+    /**
+     * 17. Approve, request changes and reopen are rejected in a closed project.
+     */
+    public function test_approve_request_changes_reopen_rejected_in_closed_project(): void
+    {
+        $this->task->update(['status' => Task::STATUS_REVIEW]);
+        $this->project->update(['status' => Project::STATUS_COMPLETED]);
+
+        Sanctum::actingAs($this->teamLead);
+
+        $appRes = $this->postJson("/api/v1/tasks/{$this->task->id}/approve");
+        $appRes->assertStatus(422);
+
+        $reqRes = $this->postJson("/api/v1/tasks/{$this->task->id}/request-changes", [
+            'reason' => 'Some changes',
+        ]);
+        $reqRes->assertStatus(422);
+
+        // Completed task in closed project cannot be reopened
+        $this->task->update(['status' => Task::STATUS_COMPLETED]);
+        $reopenRes = $this->postJson("/api/v1/tasks/{$this->task->id}/reopen", [
+            'reason' => 'Reopen in closed project',
+        ]);
+        $reopenRes->assertStatus(422);
+    }
+
+    /**
+     * 18. Task submitter cannot approve it, even after reassignment.
+     */
+    public function test_task_submitter_cannot_approve_it_even_after_reassignment(): void
+    {
+        // Team Lead was initially assigned, and submits the task for review
+        $this->task->update([
+            'assigned_to_id'  => $this->teamLead->id,
+            'submitted_by_id' => $this->teamLead->id,
+            'submitted_at'    => now(),
+            'status'          => Task::STATUS_REVIEW,
+        ]);
+
+        // Task is reassigned to employee2 while in review
+        $this->task->update([
+            'assigned_to_id' => $this->employee2->id,
+        ]);
+
+        // Team Lead tries to approve their previously submitted task
+        Sanctum::actingAs($this->teamLead);
+
+        $res = $this->postJson("/api/v1/tasks/{$this->task->id}/approve");
+        $res->assertStatus(403);
+        $res->assertJson(['message' => 'Task submitters cannot approve their own work.']);
+    }
+
+    /**
+     * 19. Reassigning a started task requires a reason, and completed task cannot be reassigned.
+     */
+    public function test_reassigning_started_task_requires_reason_and_completed_task_blocked(): void
+    {
+        $this->task->update(['status' => Task::STATUS_IN_PROGRESS]);
+
+        Sanctum::actingAs($this->teamLead);
+
+        // Missing reason on started task
+        $failRes = $this->postJson("/api/v1/tasks/{$this->task->id}/reassign", [
+            'assigned_to_id' => $this->employee2->id,
+        ]);
+        $failRes->assertStatus(422);
+
+        // Succeeded reassignment moves status to assigned
+        $okRes = $this->postJson("/api/v1/tasks/{$this->task->id}/reassign", [
+            'assigned_to_id' => $this->employee2->id,
+            'reason'         => 'Reallocating work',
+        ]);
+        $okRes->assertStatus(200);
+        $this->assertEquals(Task::STATUS_ASSIGNED, $this->task->fresh()->status);
+
+        // Completed task cannot be reassigned
+        $this->task->update(['status' => Task::STATUS_COMPLETED]);
+        $compRes = $this->postJson("/api/v1/tasks/{$this->task->id}/reassign", [
+            'assigned_to_id' => $this->employee1->id,
+            'reason'         => 'Cannot move completed',
+        ]);
+        $compRes->assertStatus(422);
+    }
+
+    /**
+     * 20. Submitting for review stops assignee timer and rejects incomplete subtasks.
+     */
+    public function test_submitting_for_review_stops_assignee_timer_and_rejects_incomplete_subtasks(): void
+    {
+        // Create an incomplete subtask
+        $subtask = Task::create([
+            'company_id'     => $this->company->id,
+            'project_id'     => $this->project->id,
+            'parent_task_id' => $this->task->id,
+            'title'          => 'Subtask 1',
+            'status'         => Task::STATUS_IN_PROGRESS,
+            'priority'       => 'medium',
+            'assigned_to_id' => $this->employee1->id,
+            'created_by_id'  => $this->teamLead->id,
+        ]);
+
+        $timer = TimeEntry::create([
+            'company_id' => $this->company->id,
+            'project_id' => $this->project->id,
+            'task_id'    => $this->task->id,
+            'user_id'    => $this->employee1->id,
+            'started_at' => now()->subHour(),
+        ]);
+
+        Sanctum::actingAs($this->employee1);
+
+        // Blocked because subtask is incomplete
+        $failRes = $this->postJson("/api/v1/tasks/{$this->task->id}/submit-for-review");
+        $failRes->assertStatus(422);
+        $failRes->assertJsonValidationErrors(['subtasks']);
+
+        // Complete subtask
+        $subtask->update(['status' => Task::STATUS_COMPLETED]);
+
+        // Submitting now succeeds and stops active timer
+        $okRes = $this->postJson("/api/v1/tasks/{$this->task->id}/submit-for-review");
+        $okRes->assertStatus(200);
+
+        $this->assertNotNull($timer->fresh()->ended_at);
+        $this->assertEquals(Task::STATUS_REVIEW, $this->task->fresh()->status);
+    }
+
+    /**
+     * 21. Subtask assignee cannot self-approve their subtask.
+     */
+    public function test_subtask_assignee_cannot_approve_own_subtask(): void
+    {
+        $subtask = Task::create([
+            'company_id'     => $this->company->id,
+            'project_id'     => $this->project->id,
+            'parent_task_id' => $this->task->id,
+            'title'          => 'Child Subtask',
+            'status'         => Task::STATUS_REVIEW,
+            'priority'       => 'low',
+            'assigned_to_id' => $this->teamLead->id,
+            'created_by_id'  => $this->admin->id,
+        ]);
+
+        Sanctum::actingAs($this->teamLead);
+
+        $res = $this->postJson("/api/v1/tasks/{$subtask->id}/approve");
+        $res->assertStatus(403);
+        $res->assertJson(['message' => 'Assignees cannot approve their own work.']);
+    }
+
+    /**
+     * 22. Notifications are not created when the transaction rolls back.
+     */
+    public function test_notifications_not_created_when_transaction_rolls_back(): void
+    {
+        $workflow = app(\App\Services\TaskWorkflowService::class);
+
+        try {
+            DB::transaction(function () use ($workflow) {
+                $workflow->submitForReview($this->task, $this->employee1, 'Will rollback');
+                throw new \RuntimeException('Simulated catastrophic failure');
+            });
+        } catch (\RuntimeException $e) {
+            // caught
+        }
+
+        $this->assertDatabaseMissing('notifications', [
+            'type' => 'task_submitted_for_review',
+        ]);
+    }
+
+    /**
+     * 23. Comment edit writes history row and can be retrieved via endpoint.
+     */
+    public function test_comment_edit_writes_history_row(): void
+    {
+        $comment = TaskComment::create([
+            'company_id' => $this->company->id,
+            'task_id'    => $this->task->id,
+            'user_id'    => $this->employee1->id,
+            'comment'    => 'Initial draft revision',
+        ]);
+
+        Sanctum::actingAs($this->employee1);
+
+        $updateRes = $this->putJson("/api/v1/tasks/{$this->task->id}/comments/{$comment->id}", [
+            'comment' => 'Corrected revision with extra details',
+        ]);
+        $updateRes->assertStatus(200);
+
+        $this->assertDatabaseHas('task_comment_edits', [
+            'task_comment_id' => $comment->id,
+            'old_comment'     => 'Initial draft revision',
+            'new_comment'     => 'Corrected revision with extra details',
+        ]);
+
+        // History endpoint
+        $histRes = $this->getJson("/api/v1/tasks/{$this->task->id}/comments/{$comment->id}/history");
+        $histRes->assertStatus(200);
+        $this->assertCount(1, $histRes->json('data'));
+        $this->assertEquals('Initial draft revision', $histRes->json('data.0.old_comment'));
+    }
+
+    /**
+     * 24. Admin activities list and CSV export endpoints.
+     */
+    public function test_admin_activities_and_csv_export(): void
+    {
+        $this->project->recordActivity(
+            action: 'task_submitted_for_review',
+            description: 'Task submitted for review audit log',
+            userId: $this->employee1->id,
+            taskId: $this->task->id,
+        );
+
+        Sanctum::actingAs($this->admin);
+
+        $listRes = $this->getJson('/api/v1/admin/activities');
+        $listRes->assertStatus(200);
+        $this->assertNotEmpty($listRes->json('data'));
+
+        $exportRes = $this->getJson('/api/v1/admin/activities/export');
+        $exportRes->assertStatus(200);
+        $exportRes->assertHeader('content-type', 'text/csv; charset=UTF-8');
+        $this->assertStringContainsString('Task submitted for review audit log', $exportRes->streamedContent());
     }
 }

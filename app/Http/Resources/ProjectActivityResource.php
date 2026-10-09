@@ -12,6 +12,7 @@ class ProjectActivityResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'project_id' => $this->project_id,
             'task_id' => $this->task_id,
             'action' => $this->action,
             'field' => $this->field,
@@ -25,6 +26,16 @@ class ProjectActivityResource extends JsonResource
                 'id' => $this->user->id,
                 'name' => $this->user->name,
                 'email' => $this->user->email,
+            ] : null),
+            'project' => $this->whenLoaded('project', fn () => $this->project ? [
+                'id' => $this->project->id,
+                'name' => $this->project->name,
+                'code' => $this->project->code,
+            ] : null),
+            'task' => $this->whenLoaded('task', fn () => $this->task ? [
+                'id' => $this->task->id,
+                'title' => $this->task->title,
+                'code' => $this->task->code,
             ] : null),
         ];
     }

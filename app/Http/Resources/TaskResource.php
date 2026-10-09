@@ -38,12 +38,28 @@ class TaskResource extends JsonResource
             'deadline_variance' => $this->deadline_variance,
             'started_at' => $this->started_at?->toIso8601String(),
             'completed_at' => $this->completed_at?->toIso8601String(),
+            'submitted_by_id' => $this->submitted_by_id,
+            'submitted_at' => $this->submitted_at?->toIso8601String(),
+            'waiting_time_human' => $this->submitted_at ? $this->submitted_at->diffForHumans() : null,
+            'reviewer_id' => $this->reviewer_id,
             'assigned_to' => $this->whenLoaded('assignedTo', fn () => $this->assignedTo ? [
                 'id' => $this->assignedTo->id,
                 'name' => $this->assignedTo->name,
                 'email' => $this->assignedTo->email,
                 'employee_code' => $this->assignedTo->employee_code,
                 'avatar_url' => $this->assignedTo->avatar_url,
+            ] : null),
+            'submitted_by' => $this->whenLoaded('submittedBy', fn () => $this->submittedBy ? [
+                'id' => $this->submittedBy->id,
+                'name' => $this->submittedBy->name,
+                'email' => $this->submittedBy->email,
+            ] : null),
+            'latest_review' => $this->whenLoaded('latestReview', fn () => $this->latestReview ? [
+                'id' => $this->latestReview->id,
+                'round_number' => $this->latestReview->round_number,
+                'outcome' => $this->latestReview->outcome,
+                'feedback' => $this->latestReview->feedback,
+                'decided_at' => $this->latestReview->decided_at?->toIso8601String(),
             ] : null),
             'created_by' => $this->whenLoaded('createdBy', fn () => $this->createdBy ? [
                 'id' => $this->createdBy->id,
