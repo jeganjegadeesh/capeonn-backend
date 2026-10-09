@@ -125,6 +125,16 @@ class Task extends Model
         return $this->hasMany(ChatMessage::class);
     }
 
+    public function comments(): HasMany
+    {
+        return $this->hasMany(TaskComment::class)->whereNull('parent_id')->orderBy('id', 'asc');
+    }
+
+    public function allComments(): HasMany
+    {
+        return $this->hasMany(TaskComment::class)->orderBy('id', 'asc');
+    }
+
     public function getIsOverdueAttribute(): bool
     {
         if (in_array($this->status, [self::STATUS_COMPLETED], true)) {

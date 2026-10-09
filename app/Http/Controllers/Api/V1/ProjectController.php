@@ -949,10 +949,30 @@ class ProjectController extends Controller
             return $this->error('You do not have permission to view this project\'s activity history.', 403);
         }
 
-        $paginator = $record->activities()
-            ->with('user:id,name,email')
-            ->orderByDesc('id')
-            ->paginate($this->perPage($request));
+        $query = $record->activities()->with('user:id,name,email');
+
+        if ($request->filled('action')) {
+            $actions = array_filter(explode(',', (string) $request->query('action')));
+            $query->whereIn('action', $actions);
+        }
+
+        if ($request->filled('task_id')) {
+            $query->where('task_id', (int) $request->query('task_id'));
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', (int) $request->query('user_id'));
+        }
+
+        if ($request->filled('from_date')) {
+            $query->whereDate('created_at', '>=', $request->query('from_date'));
+        }
+
+        if ($request->filled('to_date')) {
+            $query->whereDate('created_at', '<=', $request->query('to_date'));
+        }
+
+        $paginator = $query->orderByDesc('id')->paginate($this->perPage($request));
 
         $items = $paginator->getCollection()
             ->map(fn ($act) => (new ProjectActivityResource($act))->resolve())

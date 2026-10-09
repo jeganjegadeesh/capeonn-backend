@@ -132,4 +132,50 @@ class TaskNotificationListener
             ]);
         }
     }
+
+    public function handleTaskCommentCreated(\App\Events\Tasks\TaskCommentCreatedEvent $event): void
+    {
+        $comment = $event->comment;
+        $task = $comment->task;
+        if (! $task) return;
+
+        $project = $task->project;
+        $recipients = collect();
+
+        if ($task->assigned_to_id && (int) $task->assigned_to_id !== (int) $event->actor->id) {
+            $recipients->push((int) $task->assigned_to_id);
+        }
+
+        if ($project && $project->team_lead_id && (int) $project->team_lead_id !== (int) $event->actor->id) {
+            $recipients->push((int) $project->team_lead_id);
+        }
+
+        if ($comment->parent_id && $comment->parent && (int) $comment->parent->user_id !== (int) $event->actor->id) {
+            $recipients->push((int) $comment->parent->user_id);
+        }
+
+        foreach ($comment->mentions as $mentionedUser) {
+            if ((int) $mentionedUser->id !== (int) $event->actor->id) {
+                $recipients->push((int) $mentionedUser->id);
+            }
+        }
+
+        $recipients = $recipients->unique()->values();
+        $preview = \Illuminate\Support\Str::limit(strip_tags((string) $comment->comment), 80);
+
+        foreach ($recipients as $userId) {
+            Notification::create([
+                'company_id' => $task->company_id,
+                'user_id'    => $userId,
+                'type'       => 'task_comment',
+                'title'      => "New comment on '{$task->title}'",
+                'message'    => "{$event->actor->name}: {$preview}",
+                'data'       => [
+                    'task_id'    => $task->id,
+                    'comment_id' => $comment->id,
+                    'project_id' => $task->project_id,
+                ],
+            ]);
+        }
+    }
 }

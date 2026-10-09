@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\DeviceTokenController;
 use App\Http\Controllers\Api\V1\NotificationController;
+use App\Http\Controllers\Api\V1\TaskCommentController;
 use Illuminate\Support\Facades\Route;
 
 // Ids in URLs are always numeric; anything else is a 404.
@@ -42,6 +43,7 @@ Route::pattern('file', '[0-9]+');
 Route::pattern('upload', '[0-9]+');
 Route::pattern('attachment', '[0-9]+');
 Route::pattern('user', '[0-9]+');
+Route::pattern('comment', '[0-9]+');
 
 Route::prefix('v1')->group(function () {
 
@@ -223,10 +225,12 @@ Route::prefix('v1')->group(function () {
             Route::delete('/{project}/files/{file}', [ProjectFileController::class, 'destroy']);
         });
 
-        // ---- Tasks (Phase 5) ----
+        // ---- Tasks (Phase 5 & Phase 7) ----
         Route::prefix('tasks')->group(function () {
             Route::get('/my', [TaskController::class, 'myTasks'])->middleware('permission:tasks.view');
             Route::get('/my-work-today', [TaskController::class, 'myWorkToday'])->middleware('permission:tasks.view');
+            Route::get('/review-queue', [TaskController::class, 'reviewQueue'])->middleware('permission:tasks.view');
+
             Route::get('/{task}', [TaskController::class, 'show'])->middleware('permission:tasks.view');
             Route::put('/{task}', [TaskController::class, 'update'])->middleware('permission:tasks.manage');
             Route::delete('/{task}', [TaskController::class, 'destroy'])->middleware('permission:tasks.manage');
@@ -235,6 +239,22 @@ Route::prefix('v1')->group(function () {
             Route::get('/{task}/subtasks', [TaskController::class, 'subtasks'])->middleware('permission:tasks.view');
             Route::post('/{task}/subtasks', [TaskController::class, 'createSubtask'])->middleware('permission:tasks.manage');
             Route::get('/{task}/messages', [ChatController::class, 'taskMessages'])->middleware('permission:tasks.view');
+
+            // Phase 7 Workflow actions
+            Route::post('/{task}/submit-for-review', [TaskController::class, 'submitForReview'])->middleware('permission:tasks.update');
+            Route::post('/{task}/approve', [TaskController::class, 'approve'])->middleware('permission:tasks.manage');
+            Route::post('/{task}/request-changes', [TaskController::class, 'requestChanges'])->middleware('permission:tasks.manage');
+            Route::post('/{task}/reopen', [TaskController::class, 'reopen'])->middleware('permission:tasks.manage');
+            Route::post('/{task}/reassign', [TaskController::class, 'reassign'])->middleware('permission:tasks.manage');
+
+            // Phase 7 Task Activity timeline
+            Route::get('/{task}/activities', [TaskController::class, 'activities'])->middleware('permission:tasks.view');
+
+            // Phase 7 Task Comments
+            Route::get('/{task}/comments', [TaskCommentController::class, 'index'])->middleware('permission:tasks.view');
+            Route::post('/{task}/comments', [TaskCommentController::class, 'store'])->middleware('permission:tasks.view');
+            Route::put('/{task}/comments/{comment}', [TaskCommentController::class, 'update'])->middleware('permission:tasks.view');
+            Route::delete('/{task}/comments/{comment}', [TaskCommentController::class, 'destroy'])->middleware('permission:tasks.view');
 
             // Timer & manual time entries
             Route::post('/{task}/timer/start', [TimeEntryController::class, 'startTimer'])->middleware('permission:time.track');
