@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Events\Chat\MessageSentEvent;
 use App\Models\ConversationParticipant;
 use App\Models\Notification;
+use App\Services\NotificationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Str;
@@ -29,6 +30,7 @@ class ChatNotificationListener implements ShouldQueue
         $sender = $message->user;
         $companyId = $conversation->company_id;
         $snippet = Str::limit($message->message ?? 'Sent an attachment', 100);
+        $notificationService = app(NotificationService::class);
 
         // 1. Process @mentions first
         $mentionedUserIds = $message->mentions()->pluck('users.id')->all();
@@ -37,17 +39,17 @@ class ChatNotificationListener implements ShouldQueue
                 continue;
             }
 
-            Notification::create([
-                'company_id' => $companyId,
-                'user_id'    => $userId,
-                'type'       => 'chat_mention',
-                'title'      => 'Mentioned by ' . ($sender?->name ?? 'Colleague'),
-                'message'    => ($sender?->name ?? 'Colleague') . " mentioned you: \"{$snippet}\"",
-                'data'       => [
+            $notificationService->notifyUser(
+                (int) $userId,
+                'chat_mention',
+                'Mentioned by ' . ($sender?->name ?? 'Colleague'),
+                ($sender?->name ?? 'Colleague') . " mentioned you: \"{$snippet}\"",
+                [
                     'conversation_id' => $conversation->id,
                     'message_id'      => $message->id,
                 ],
-            ]);
+                $companyId
+            );
         }
 
         // 2. Process general message notifications: collapsed to 1 unread row per conversation
@@ -74,23 +76,37 @@ class ChatNotificationListener implements ShouldQueue
                 $data['message_id'] = $message->id;
 
                 $existing->update([
-                    'message' => ($sender?->name ?? 'Colleague') . ": {$snippet}",
-                    'data' => $data,
+                    'message'    => ($sender?->name ?? 'Colleague') . ": {$snippet}",
+                    'data'       => $data,
                     'updated_at' => now(),
                 ]);
+
+                // Still deliver real-time and push for subsequent messages
+                $notificationService->notifyUser(
+                    (int) $p->user_id,
+                    'chat_message',
+                    'New message in ' . $convTitle,
+                    ($sender?->name ?? 'Colleague') . ": {$snippet}",
+                    [
+                        'conversation_id' => $conversation->id,
+                        'message_id'      => $message->id,
+                        'unread_count'    => $unreadCount,
+                    ],
+                    $companyId
+                );
             } else {
-                Notification::create([
-                    'company_id' => $companyId,
-                    'user_id'    => $p->user_id,
-                    'type'       => 'chat_message',
-                    'title'      => 'New message in ' . $convTitle,
-                    'message'    => ($sender?->name ?? 'Colleague') . ": {$snippet}",
-                    'data'       => [
+                $notificationService->notifyUser(
+                    (int) $p->user_id,
+                    'chat_message',
+                    'New message in ' . $convTitle,
+                    ($sender?->name ?? 'Colleague') . ": {$snippet}",
+                    [
                         'conversation_id' => $conversation->id,
                         'message_id'      => $message->id,
                         'unread_count'    => 1,
                     ],
-                ]);
+                    $companyId
+                );
             }
         }
     }

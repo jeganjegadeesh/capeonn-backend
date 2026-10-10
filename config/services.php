@@ -35,4 +35,10 @@ return [
         ],
     ],
 
+    'fcm' => [
+        'project_id'       => env('FCM_PROJECT_ID', 'ajprojects-e3b2a'),
+        'server_key'       => env('FCM_SERVER_KEY', null),
+        'credentials_path' => env('FIREBASE_CREDENTIALS', null),
+    ],
+
 ];

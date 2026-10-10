@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\V1\TimeEntryController;
 use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\DeviceTokenController;
 use App\Http\Controllers\Api\V1\NotificationController;
+use App\Http\Controllers\Api\V1\NotificationPreferencesController;
 use App\Http\Controllers\Api\V1\TaskCommentController;
 use Illuminate\Support\Facades\Route;
 
@@ -315,15 +316,19 @@ Route::prefix('v1')->group(function () {
             Route::put('/privacy', [PresenceController::class, 'updatePrivacy']);
         });
 
-        // ---- Push-Ready Device Tokens (Phase 8 FCM Preparation) ----
+        // ---- Push-Ready Device Tokens (Phase 8 FCM) ----
+        Route::get('/device-tokens', [DeviceTokenController::class, 'index']);
         Route::post('/device-tokens', [DeviceTokenController::class, 'store']);
         Route::delete('/device-tokens', [DeviceTokenController::class, 'destroy']);
 
-        // ---- Notifications Inbox (Phase 6 / 7) ----
+        // ---- Notifications Inbox & Preferences (Phase 8) ----
         Route::prefix('notifications')->group(function () {
             Route::get('/', [NotificationController::class, 'index']);
             Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
             Route::post('/read-all', [NotificationController::class, 'markAllRead']);
+            Route::get('/preferences', [NotificationPreferencesController::class, 'show']);
+            Route::put('/preferences', [NotificationPreferencesController::class, 'update']);
+            Route::post('/test-push', [NotificationPreferencesController::class, 'testPush']);
             Route::post('/{id}/read', [NotificationController::class, 'markRead']);
             Route::delete('/{id}', [NotificationController::class, 'destroy']);
         });

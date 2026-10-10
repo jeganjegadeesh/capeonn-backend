@@ -10,7 +10,20 @@ use Illuminate\Http\Request;
 class DeviceTokenController extends Controller
 {
     /**
-     * Store or update device push token for authenticated user (Phase 8 FCM ready).
+     * List registered devices for the authenticated user.
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        $devices = DeviceToken::where('user_id', $actor->id)
+            ->orderBy('last_used_at', 'desc')
+            ->get(['id', 'platform', 'device_name', 'last_used_at', 'created_at']);
+
+        return $this->success($devices, 'Registered devices retrieved successfully');
+    }
+
+    /**
+     * Store or update device push token for authenticated user (Phase 8 FCM).
      */
     public function store(Request $request): JsonResponse
     {
@@ -18,7 +31,8 @@ class DeviceTokenController extends Controller
 
         $validated = $request->validate([
             'token' => ['required', 'string', 'max:500'],
-            'platform' => ['nullable', 'string', 'in:android,ios,web'],
+            'platform' => ['nullable', 'string', 'in:android,ios,web,windows'],
+            'device_name' => ['nullable', 'string', 'max:255'],
         ]);
 
         $deviceToken = DeviceToken::updateOrCreate(
@@ -28,6 +42,7 @@ class DeviceTokenController extends Controller
             [
                 'user_id' => $actor->id,
                 'platform' => $validated['platform'] ?? 'android',
+                'device_name' => $validated['device_name'] ?? null,
                 'last_used_at' => now(),
             ]
         );
@@ -36,6 +51,7 @@ class DeviceTokenController extends Controller
             'id' => $deviceToken->id,
             'token' => $deviceToken->token,
             'platform' => $deviceToken->platform,
+            'device_name' => $deviceToken->device_name,
         ], 'Device token registered successfully', 201);
     }
 

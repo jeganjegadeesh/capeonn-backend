@@ -208,6 +208,11 @@ class User extends Authenticatable
         return $this->hasMany(ProjectFile::class, 'uploaded_by_id');
     }
 
+    public function notificationPreferences(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(UserNotificationPreference::class);
+    }
+
     /**
      * The user's permissions as [slug => scope], e.g. ['employees.view' => 'department'].
      * Load `role.permissions` first to avoid extra queries.
