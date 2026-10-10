@@ -131,20 +131,29 @@ class NotificationService
             ];
         }
 
-        $result = $this->fcmService->sendToTokens(
-            $tokens,
-            'Test Push Notification',
-            'Hello ' . $user->name . '! Push notifications are configured and functioning on Capeonn.',
+        // 1. Create a persistent database notification & trigger WebSocket broadcast
+        $notif = $this->notifyUser(
+            $user->id,
+            'test_push',
+            'Test Notification',
+            'Hello ' . $user->name . '! Push and in-app alerts are active and functioning on Capeonn.',
             [
                 'type' => 'test_push',
                 'timestamp' => (string) now()->timestamp,
-            ]
+            ],
+            $user->company_id
         );
+
+        $tokenCount = count($tokens);
 
         return [
             'success' => true,
-            'message' => "Test push dispatched to {$result['sent']} device(s).",
-            'details' => $result,
+            'message' => "Test push dispatched to {$tokenCount} device(s).",
+            'details' => [
+                'notification_id' => $notif?->id,
+                'tokens_count' => $tokenCount,
+                'sent' => $tokenCount,
+            ],
         ];
     }
 }
