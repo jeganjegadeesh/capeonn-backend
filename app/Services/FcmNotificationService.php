@@ -28,7 +28,9 @@ class FcmNotificationService
      */
     public function sendToTokens(array $tokens, string $title, string $message, array $data = []): array
     {
-        $tokens = array_filter(array_unique($tokens));
+        $tokens = array_filter(array_unique($tokens), function ($token) {
+            return is_string($token) && ! str_starts_with($token, 'device_') && strlen($token) > 20;
+        });
         if (empty($tokens)) {
             return ['sent' => 0, 'failed' => 0, 'pruned' => 0];
         }
