@@ -127,11 +127,13 @@ class TaskNotificationListener
             $event->task->project->team_lead_id,
         ]));
 
+        $todayKolkata = \Carbon\Carbon::today('Asia/Kolkata')->toDateString();
+
         foreach ($recipients as $userId) {
             // Deduplicate: check if overdue notification was already sent today for this task
             $alreadySent = Notification::where('user_id', $userId)
                 ->where('type', 'task_overdue')
-                ->whereDate('created_at', now()->toDateString())
+                ->whereDate('created_at', $todayKolkata)
                 ->where('data->task_id', $event->task->id)
                 ->exists();
 
@@ -151,9 +153,10 @@ class TaskNotificationListener
     public function handleTaskDueSoon(TaskDueSoonEvent $event): void
     {
         if ($event->task->assigned_to_id) {
+            $todayKolkata = \Carbon\Carbon::today('Asia/Kolkata')->toDateString();
             $alreadySent = Notification::where('user_id', $event->task->assigned_to_id)
                 ->where('type', 'task_due_soon')
-                ->whereDate('created_at', now()->toDateString())
+                ->whereDate('created_at', $todayKolkata)
                 ->where('data->task_id', $event->task->id)
                 ->exists();
 

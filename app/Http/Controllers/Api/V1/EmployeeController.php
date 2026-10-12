@@ -112,9 +112,10 @@ class EmployeeController extends Controller
 
         $target->update($data);
 
-        // Deactivated? Sign them out everywhere right away and remove from project chats.
+        // Deactivated? Sign them out everywhere right away, remove device tokens and remove from project chats.
         if ($target->wasChanged('is_active') && ! $target->is_active) {
             $target->tokens()->delete();
+            \App\Models\DeviceToken::where('user_id', $target->id)->delete();
             app(\App\Services\ChatProvisioningService::class)->handleUserDeactivated($target);
         }
 

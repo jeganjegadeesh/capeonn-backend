@@ -3,41 +3,62 @@
 namespace App\Services;
 
 use App\Models\DeviceToken;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class FcmNotificationService
 {
     protected ?string $projectId;
-    protected ?string $serverKey;
     protected ?string $credentialsPath;
 
     public function __construct()
     {
-        $this->projectId = config('services.fcm.project_id', 'ajprojects-e3b2a');
-        $this->serverKey = config('services.fcm.server_key');
+        $this->projectId = config('services.fcm.project_id');
         $this->credentialsPath = config('services.fcm.credentials_path');
     }
 
     /**
-     * Send push notification to a specific list of device tokens.
+     * Check if FCM service account and project ID are properly configured on the server.
+     */
+    public function isConfigured(): bool
+    {
+        return ! empty($this->projectId)
+            && ! empty($this->credentialsPath)
+            && file_exists($this->credentialsPath);
+    }
+
+    /**
+     * Send push notification to a specific list of device tokens using FCM HTTP v1.
      *
      * @param  array<string>  $tokens
      * @param  array<string, mixed>  $data
-     * @return array{sent: int, failed: int, pruned: int}
+     * @return array{sent: int, failed: int, pruned: int, configured: bool, error?: string}
      */
     public function sendToTokens(array $tokens, string $title, string $message, array $data = []): array
     {
-        $tokens = array_filter(array_unique($tokens), function ($token) {
+        $tokens = array_values(array_filter(array_unique($tokens), function ($token) {
             return is_string($token) && ! str_starts_with($token, 'device_') && ! str_starts_with($token, 'win_device_') && strlen($token) > 20;
-        });
+        }));
+
         if (empty($tokens)) {
-            return ['sent' => 0, 'failed' => 0, 'pruned' => 0];
+            return ['sent' => 0, 'failed' => 0, 'pruned' => 0, 'configured' => $this->isConfigured()];
         }
 
-        $sent = 0;
-        $failed = 0;
-        $pruned = 0;
+        if (! $this->isConfigured()) {
+            Log::warning('FCM Push Notification: Service is not configured. Missing credentials or project ID.', [
+                'has_project_id'   => ! empty($this->projectId),
+                'credentials_path' => $this->credentialsPath,
+            ]);
+
+            return [
+                'sent'        => 0,
+                'failed'      => count($tokens),
+                'pruned'      => 0,
+                'configured'  => false,
+                'error'       => 'Push notifications are not configured on the server.',
+            ];
+        }
 
         // Ensure all data values are stringified for FCM data payload compatibility
         $formattedData = [];
@@ -46,25 +67,7 @@ class FcmNotificationService
         }
         $formattedData['click_action'] = 'FLUTTER_NOTIFICATION_CLICK';
 
-        // 1. If FCM legacy server key is provided, use legacy endpoint
-        if (! empty($this->serverKey)) {
-            return $this->sendViaLegacyHttp($tokens, $title, $message, $formattedData);
-        }
-
-        // 2. If Service Account JSON credentials exist, use HTTP v1 API
-        if (! empty($this->credentialsPath) && file_exists($this->credentialsPath)) {
-            return $this->sendViaHttpV1($tokens, $title, $message, $formattedData);
-        }
-
-        // 3. Fallback: Log simulation in local/test environment
-        Log::channel('single')->info('FCM Push Notification Simulated', [
-            'tokens_count' => count($tokens),
-            'title'        => $title,
-            'message'      => $message,
-            'data'         => $formattedData,
-        ]);
-
-        return ['sent' => count($tokens), 'failed' => 0, 'pruned' => 0];
+        return $this->sendViaHttpV1($tokens, $title, $message, $formattedData);
     }
 
     /**
@@ -74,68 +77,10 @@ class FcmNotificationService
     {
         $tokens = DeviceToken::where('user_id', $userId)->pluck('token')->all();
         if (empty($tokens)) {
-            return ['sent' => 0, 'failed' => 0, 'pruned' => 0];
+            return ['sent' => 0, 'failed' => 0, 'pruned' => 0, 'configured' => $this->isConfigured()];
         }
 
         return $this->sendToTokens($tokens, $title, $message, $data);
-    }
-
-    /**
-     * Send via legacy FCM HTTP endpoint.
-     */
-    protected function sendViaLegacyHttp(array $tokens, string $title, string $message, array $data): array
-    {
-        $url = 'https://fcm.googleapis.com/fcm/send';
-        $sent = 0;
-        $failed = 0;
-        $pruned = 0;
-
-        // Chunk in batches of 500 (FCM registration_ids limit)
-        foreach (array_chunk($tokens, 500) as $chunk) {
-            try {
-                $response = Http::withHeaders([
-                    'Authorization' => 'key=' . $this->serverKey,
-                    'Content-Type'  => 'application/json',
-                ])->timeout(10)->post($url, [
-                    'registration_ids' => $chunk,
-                    'notification'     => [
-                        'title' => $title,
-                        'body'  => $message,
-                        'sound' => 'default',
-                    ],
-                    'data'             => $data,
-                    'priority'         => 'high',
-                ]);
-
-                if ($response->successful()) {
-                    $resJson = $response->json();
-                    $sent += (int) ($resJson['success'] ?? 0);
-                    $failed += (int) ($resJson['failure'] ?? 0);
-
-                    // Check individual results for invalid tokens
-                    if (! empty($resJson['results']) && is_array($resJson['results'])) {
-                        foreach ($resJson['results'] as $idx => $result) {
-                            $err = $result['error'] ?? null;
-                            if (in_array($err, ['NotRegistered', 'InvalidRegistration', 'MismatchSenderId'], true)) {
-                                $invalidToken = $chunk[$idx] ?? null;
-                                if ($invalidToken) {
-                                    $this->pruneToken($invalidToken);
-                                    $pruned++;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    $failed += count($chunk);
-                    Log::warning('FCM HTTP send failed', ['status' => $response->status(), 'body' => $response->body()]);
-                }
-            } catch (\Throwable $e) {
-                $failed += count($chunk);
-                Log::error('FCM exception: ' . $e->getMessage());
-            }
-        }
-
-        return ['sent' => $sent, 'failed' => $failed, 'pruned' => $pruned];
     }
 
     /**
@@ -146,7 +91,13 @@ class FcmNotificationService
         $accessToken = $this->getOAuthAccessToken();
         if (! $accessToken) {
             Log::warning('FCM HTTP v1: Unable to obtain OAuth access token from credentials.');
-            return ['sent' => 0, 'failed' => count($tokens), 'pruned' => 0];
+            return [
+                'sent'       => 0,
+                'failed'     => count($tokens),
+                'pruned'     => 0,
+                'configured' => true,
+                'error'      => 'Failed to obtain Google OAuth access token',
+            ];
         }
 
         $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
@@ -167,8 +118,8 @@ class FcmNotificationService
                         'android'      => [
                             'priority'     => 'HIGH',
                             'notification' => [
-                                'sound'                  => 'default',
-                                'channel_id'             => 'capeonn_high_importance_channel',
+                                'sound'                 => 'default',
+                                'channel_id'            => 'capeonn_high_importance_channel',
                                 'notification_priority' => 'PRIORITY_HIGH',
                             ],
                         ],
@@ -204,7 +155,12 @@ class FcmNotificationService
             }
         }
 
-        return ['sent' => $sent, 'failed' => $failed, 'pruned' => $pruned];
+        return [
+            'sent'       => $sent,
+            'failed'     => $failed,
+            'pruned'     => $pruned,
+            'configured' => true,
+        ];
     }
 
     /**
@@ -214,59 +170,61 @@ class FcmNotificationService
     {
         try {
             DeviceToken::where('token', $token)->delete();
-            Log::info("Pruned unregistered FCM token: " . substr($token, 0, 16) . '...');
+            Log::info('Pruned unregistered FCM token: ' . substr($token, 0, 16) . '...');
         } catch (\Throwable $e) {
-            Log::warning("Failed to prune token: " . $e->getMessage());
+            Log::warning('Failed to prune token: ' . $e->getMessage());
         }
     }
 
     /**
-     * Obtain OAuth access token from service account JSON if available.
+     * Obtain OAuth access token from service account JSON, cached for 50 minutes.
      */
-    protected function getOAuthAccessToken(): ?string
+    public function getOAuthAccessToken(): ?string
     {
         if (! $this->credentialsPath || ! file_exists($this->credentialsPath)) {
             return null;
         }
 
-        try {
-            $json = json_decode(file_get_contents($this->credentialsPath), true);
-            if (! is_array($json) || empty($json['private_key']) || empty($json['client_email'])) {
+        return Cache::remember('fcm_v1_oauth_access_token', now()->addMinutes(50), function () {
+            try {
+                $json = json_decode(file_get_contents($this->credentialsPath), true);
+                if (! is_array($json) || empty($json['private_key']) || empty($json['client_email'])) {
+                    return null;
+                }
+
+                // Standard JWT creation for Google OAuth2
+                $now = time();
+                $header = json_encode(['alg' => 'RS256', 'typ' => 'JWT']);
+                $claims = json_encode([
+                    'iss'   => $json['client_email'],
+                    'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
+                    'aud'   => 'https://oauth2.googleapis.com/token',
+                    'iat'   => $now,
+                    'exp'   => $now + 3600,
+                ]);
+
+                $b64Header = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($header));
+                $b64Claims = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($claims));
+                $dataToSign = "{$b64Header}.{$b64Claims}";
+
+                $signature = '';
+                if (! openssl_sign($dataToSign, $signature, $json['private_key'], OPENSSL_ALGO_SHA256)) {
+                    return null;
+                }
+
+                $b64Signature = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($signature));
+                $jwt = "{$dataToSign}.{$b64Signature}";
+
+                $res = Http::asForm()->timeout(10)->post('https://oauth2.googleapis.com/token', [
+                    'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                    'assertion'  => $jwt,
+                ]);
+
+                return $res->json()['access_token'] ?? null;
+            } catch (\Throwable $e) {
+                Log::error('FCM OAuth2 generation error: ' . $e->getMessage());
                 return null;
             }
-
-            // Standard JWT creation for Google OAuth2
-            $now = time();
-            $header = json_encode(['alg' => 'RS256', 'typ' => 'JWT']);
-            $claims = json_encode([
-                'iss'   => $json['client_email'],
-                'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
-                'aud'   => 'https://oauth2.googleapis.com/token',
-                'iat'   => $now,
-                'exp'   => $now + 3600,
-            ]);
-
-            $b64Header = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($header));
-            $b64Claims = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($claims));
-            $dataToSign = "{$b64Header}.{$b64Claims}";
-
-            $signature = '';
-            if (! openssl_sign($dataToSign, $signature, $json['private_key'], OPENSSL_ALGO_SHA256)) {
-                return null;
-            }
-
-            $b64Signature = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($signature));
-            $jwt = "{$dataToSign}.{$b64Signature}";
-
-            $res = Http::asForm()->post('https://oauth2.googleapis.com/token', [
-                'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-                'assertion'  => $jwt,
-            ]);
-
-            return $res->json()['access_token'] ?? null;
-        } catch (\Throwable $e) {
-            Log::error('FCM OAuth2 generation error: ' . $e->getMessage());
-            return null;
-        }
+        });
     }
 }

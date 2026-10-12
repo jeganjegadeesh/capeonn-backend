@@ -16,7 +16,7 @@ class CheckTaskDeadlinesCommand extends Command
 
     public function handle(): int
     {
-        $today = Carbon::today();
+        $today = Carbon::today('Asia/Kolkata');
 
         $tasks = Task::with('project')
             ->where('status', '!=', Task::STATUS_COMPLETED)
@@ -33,9 +33,12 @@ class CheckTaskDeadlinesCommand extends Command
         $dueSoonCount = 0;
         $overdueCount = 0;
 
+        $todayStr = Carbon::today('Asia/Kolkata')->format('Y-m-d');
+        $todayDate = Carbon::parse($todayStr);
+
         foreach ($tasks as $task) {
-            $dueDate = Carbon::parse($task->due_date);
-            $daysDiff = (int) $today->diffInDays($dueDate, false);
+            $dueStr = Carbon::parse($task->due_date)->format('Y-m-d');
+            $daysDiff = (int) $todayDate->diffInDays(Carbon::parse($dueStr), false);
 
             if ($daysDiff < 0) {
                 TaskOverdueEvent::dispatch($task, abs($daysDiff));

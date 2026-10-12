@@ -20,12 +20,17 @@ class NotificationPreferencesController extends Controller
         $preferences = UserNotificationPreference::firstOrCreate(
             ['user_id' => $actor->id],
             [
-                'push_enabled'     => true,
-                'email_enabled'    => true,
-                'task_alerts'      => true,
-                'deadline_alerts'  => true,
-                'chat_alerts'      => true,
-                'project_alerts'   => true,
+                'push_enabled'        => true,
+                'email_enabled'       => true,
+                'task_alerts'         => true,
+                'deadline_alerts'     => true,
+                'chat_alerts'         => true,
+                'project_alerts'      => true,
+                'quiet_hours_enabled' => false,
+                'quiet_hours_start'   => null,
+                'quiet_hours_end'     => null,
+                'hide_previews'       => false,
+                'chat_mentions_only'  => false,
             ]
         );
 
@@ -40,12 +45,17 @@ class NotificationPreferencesController extends Controller
         $actor = $request->user();
 
         $validated = $request->validate([
-            'push_enabled'     => ['nullable', 'boolean'],
-            'email_enabled'    => ['nullable', 'boolean'],
-            'task_alerts'      => ['nullable', 'boolean'],
-            'deadline_alerts'  => ['nullable', 'boolean'],
-            'chat_alerts'      => ['nullable', 'boolean'],
-            'project_alerts'   => ['nullable', 'boolean'],
+            'push_enabled'        => ['nullable', 'boolean'],
+            'email_enabled'       => ['nullable', 'boolean'],
+            'task_alerts'         => ['nullable', 'boolean'],
+            'deadline_alerts'     => ['nullable', 'boolean'],
+            'chat_alerts'         => ['nullable', 'boolean'],
+            'project_alerts'      => ['nullable', 'boolean'],
+            'quiet_hours_enabled' => ['nullable', 'boolean'],
+            'quiet_hours_start'   => ['nullable', 'string', 'max:10'],
+            'quiet_hours_end'     => ['nullable', 'string', 'max:10'],
+            'hide_previews'       => ['nullable', 'boolean'],
+            'chat_mentions_only'  => ['nullable', 'boolean'],
         ]);
 
         $preferences = UserNotificationPreference::updateOrCreate(

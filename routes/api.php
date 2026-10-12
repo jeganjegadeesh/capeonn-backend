@@ -325,11 +325,12 @@ Route::prefix('v1')->group(function () {
         Route::prefix('notifications')->group(function () {
             Route::get('/', [NotificationController::class, 'index']);
             Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
-            Route::post('/read-all', [NotificationController::class, 'markAllRead']);
+            Route::match(['post', 'put'], '/read-all', [NotificationController::class, 'markAllRead']);
+            Route::match(['post', 'put'], '/mark-all-read', [NotificationController::class, 'markAllRead']);
             Route::get('/preferences', [NotificationPreferencesController::class, 'show']);
             Route::put('/preferences', [NotificationPreferencesController::class, 'update']);
             Route::post('/test-push', [NotificationPreferencesController::class, 'testPush']);
-            Route::post('/{id}/read', [NotificationController::class, 'markRead']);
+            Route::match(['post', 'put'], '/{id}/read', [NotificationController::class, 'markRead']);
             Route::delete('/{id}', [NotificationController::class, 'destroy']);
         });
 

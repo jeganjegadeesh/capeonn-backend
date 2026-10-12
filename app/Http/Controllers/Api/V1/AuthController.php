@@ -58,8 +58,18 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
+        $user = $request->user();
+
+        // Revoke device push token for this device if provided in body or headers
+        $deviceToken = $request->input('device_token') ?? $request->header('X-Device-Token');
+        if ($deviceToken) {
+            \App\Models\DeviceToken::where('user_id', $user->id)
+                ->where('token', $deviceToken)
+                ->delete();
+        }
+
         // Revokes only the token used for this request (this device).
-        $request->user()->currentAccessToken()->delete();
+        $user->currentAccessToken()->delete();
 
         return $this->success(null, 'Logged out');
     }

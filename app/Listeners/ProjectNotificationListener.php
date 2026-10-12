@@ -23,7 +23,7 @@ class ProjectNotificationListener
 
     public function handleProjectAssigned(ProjectAssignedEvent $event): void
     {
-        if ($event->teamLead) {
+        if ($event->teamLead && (! isset($event->actor) || (int) $event->teamLead->id !== (int) $event->actor->id)) {
             $this->notificationService->notifyUser(
                 (int) $event->teamLead->id,
                 'project_lead_assigned',
@@ -38,7 +38,7 @@ class ProjectNotificationListener
     public function handleProjectCompletionRequested(ProjectCompletionRequestedEvent $event): void
     {
         $targetUserId = $event->project->manager_id ?? $event->project->created_by_id;
-        if ($targetUserId) {
+        if ($targetUserId && (int) $targetUserId !== (int) $event->actor->id) {
             $this->notificationService->notifyUser(
                 (int) $targetUserId,
                 'project_completion_requested',
@@ -53,10 +53,11 @@ class ProjectNotificationListener
     public function handleProjectDeadlineApproaching(ProjectDeadlineApproachingEvent $event): void
     {
         $recipients = array_filter(array_unique([$event->project->team_lead_id, $event->project->manager_id]));
+        $todayKolkata = \Carbon\Carbon::today('Asia/Kolkata')->toDateString();
         foreach ($recipients as $userId) {
             $alreadySent = Notification::where('user_id', $userId)
                 ->where('type', 'project_deadline_approaching')
-                ->whereDate('created_at', now()->toDateString())
+                ->whereDate('created_at', $todayKolkata)
                 ->where('data->project_id', $event->project->id)
                 ->exists();
 
@@ -76,10 +77,11 @@ class ProjectNotificationListener
     public function handleProjectOverdue(ProjectOverdueEvent $event): void
     {
         $recipients = array_filter(array_unique([$event->project->team_lead_id, $event->project->manager_id]));
+        $todayKolkata = \Carbon\Carbon::today('Asia/Kolkata')->toDateString();
         foreach ($recipients as $userId) {
             $alreadySent = Notification::where('user_id', $userId)
                 ->where('type', 'project_overdue')
-                ->whereDate('created_at', now()->toDateString())
+                ->whereDate('created_at', $todayKolkata)
                 ->where('data->project_id', $event->project->id)
                 ->exists();
 
@@ -98,6 +100,10 @@ class ProjectNotificationListener
 
     public function handleProjectMemberAdded(ProjectMemberAddedEvent $event): void
     {
+        if (isset($event->actor) && (int) $event->member->id === (int) $event->actor->id) {
+            return;
+        }
+
         $this->notificationService->notifyUser(
             (int) $event->member->id,
             'project_member_added',
@@ -110,6 +116,10 @@ class ProjectNotificationListener
 
     public function handleProjectMemberRemoved(ProjectMemberRemovedEvent $event): void
     {
+        if (isset($event->actor) && (int) $event->member->id === (int) $event->actor->id) {
+            return;
+        }
+
         $this->notificationService->notifyUser(
             (int) $event->member->id,
             'project_member_removed',

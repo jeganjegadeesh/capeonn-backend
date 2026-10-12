@@ -18,15 +18,23 @@ class UserNotificationPreference extends Model
         'deadline_alerts',
         'chat_alerts',
         'project_alerts',
+        'quiet_hours_enabled',
+        'quiet_hours_start',
+        'quiet_hours_end',
+        'hide_previews',
+        'chat_mentions_only',
     ];
 
     protected $casts = [
-        'push_enabled'     => 'boolean',
-        'email_enabled'    => 'boolean',
-        'task_alerts'      => 'boolean',
-        'deadline_alerts'  => 'boolean',
-        'chat_alerts'      => 'boolean',
-        'project_alerts'   => 'boolean',
+        'push_enabled'        => 'boolean',
+        'email_enabled'       => 'boolean',
+        'task_alerts'         => 'boolean',
+        'deadline_alerts'     => 'boolean',
+        'chat_alerts'         => 'boolean',
+        'project_alerts'      => 'boolean',
+        'quiet_hours_enabled' => 'boolean',
+        'hide_previews'       => 'boolean',
+        'chat_mentions_only'  => 'boolean',
     ];
 
     public function user(): BelongsTo
@@ -39,22 +47,52 @@ class UserNotificationPreference extends Model
      */
     public function isAlertEnabled(string $type): bool
     {
-        if (in_array($type, ['task_overdue', 'task_due_soon', 'project_deadline_approaching', 'project_overdue'])) {
+        if (\App\Services\NotificationTypeRegistry::isMandatory($type)) {
+            return true;
+        }
+
+        $category = \App\Services\NotificationTypeRegistry::getCategoryForType($type);
+
+        if ($category === 'deadlines') {
             return (bool) $this->deadline_alerts;
         }
 
-        if (str_starts_with($type, 'task_')) {
+        if ($category === 'tasks') {
             return (bool) $this->task_alerts;
         }
 
-        if (str_starts_with($type, 'chat_')) {
+        if ($category === 'chat') {
+            if ($this->chat_mentions_only && $type === 'chat_message') {
+                return false;
+            }
             return (bool) $this->chat_alerts;
         }
 
-        if (str_starts_with($type, 'project_')) {
+        if ($category === 'projects') {
             return (bool) $this->project_alerts;
         }
 
         return true;
+    }
+
+    /**
+     * Check if currently in quiet hours.
+     */
+    public function isQuietHoursNow(?string $timezone = 'Asia/Kolkata'): bool
+    {
+        if (! $this->quiet_hours_enabled || ! $this->quiet_hours_start || ! $this->quiet_hours_end) {
+            return false;
+        }
+
+        $tz = $timezone ?: 'Asia/Kolkata';
+        $now = now()->setTimezone($tz);
+        $currentTime = $now->format('H:i');
+
+        if ($this->quiet_hours_start <= $this->quiet_hours_end) {
+            return $currentTime >= $this->quiet_hours_start && $currentTime <= $this->quiet_hours_end;
+        }
+
+        // Crosses midnight (e.g. 22:00 to 07:00)
+        return $currentTime >= $this->quiet_hours_start || $currentTime <= $this->quiet_hours_end;
     }
 }

@@ -15,7 +15,7 @@ class CheckProjectDeadlinesCommand extends Command
 
     public function handle(): int
     {
-        $today = Carbon::today();
+        $today = Carbon::today('Asia/Kolkata');
 
         $projects = Project::whereNotIn('status', [
             Project::STATUS_COMPLETED,
@@ -28,9 +28,12 @@ class CheckProjectDeadlinesCommand extends Command
         $approachingCount = 0;
         $overdueCount = 0;
 
+        $todayStr = Carbon::today('Asia/Kolkata')->format('Y-m-d');
+        $todayDate = Carbon::parse($todayStr);
+
         foreach ($projects as $project) {
-            $deadline = Carbon::parse($project->deadline);
-            $daysDiff = (int) $today->diffInDays($deadline, false);
+            $deadlineStr = Carbon::parse($project->deadline)->format('Y-m-d');
+            $daysDiff = (int) $todayDate->diffInDays(Carbon::parse($deadlineStr), false);
 
             if ($daysDiff < 0) {
                 // Overdue
