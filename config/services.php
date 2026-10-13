@@ -36,8 +36,11 @@ return [
     ],
 
     'fcm' => [
-        'project_id'       => env('FCM_PROJECT_ID', null),
-        'credentials_path' => env('FIREBASE_CREDENTIALS', null),
+        'project_id'       => env('FCM_PROJECT_ID', 'ajprojects-e3b2a'),
+        'credentials_path' => env('FIREBASE_CREDENTIALS')
+            ? (file_exists(env('FIREBASE_CREDENTIALS'))
+                ? env('FIREBASE_CREDENTIALS')
+                : base_path(env('FIREBASE_CREDENTIALS')))
+            : storage_path('firebase-credentials.json'),
     ],
-
 ];
