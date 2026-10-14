@@ -14,11 +14,6 @@ class ChatNotificationListener implements ShouldQueue
 {
     use InteractsWithQueue;
 
-    public function handle(MessageSentEvent $event): void
-    {
-        $this->handleMessageSent($event);
-    }
-
     public function handleMessageSent(MessageSentEvent $event): void
     {
         $message = $event->message;

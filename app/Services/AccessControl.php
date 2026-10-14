@@ -53,7 +53,10 @@ class AccessControl
             Permission::SCOPE_DEPARTMENT => $actor->department_id === null
                 ? $query->whereRaw('1 = 0')
                 : $query->where('users.department_id', $actor->department_id),
-            Permission::SCOPE_TEAM       => $query->whereIn('users.id', $this->subordinateIds($actor)),
+            Permission::SCOPE_TEAM       => $query->where(function ($sub) use ($actor) {
+                $sub->whereIn('users.id', $this->subordinateIds($actor))
+                    ->orWhere('users.id', $actor->id);
+            }),
             Permission::SCOPE_SELF       => $query->where('users.id', $actor->id),
             default                      => $query->whereRaw('1 = 0'),
         };
@@ -163,7 +166,11 @@ class AccessControl
                     ->orWhere('projects.manager_id', $actor->id)
                     ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
             }),
-            Permission::SCOPE_TEAM       => $query->whereIn('projects.team_lead_id', $this->subordinateIds($actor)),
+            Permission::SCOPE_TEAM       => $query->where(function ($sub) use ($actor) {
+                $sub->where('projects.team_lead_id', $actor->id)
+                    ->orWhereIn('projects.team_lead_id', $this->subordinateIds($actor))
+                    ->orWhereHas('members', fn ($m) => $m->where('users.id', $actor->id));
+            }),
             Permission::SCOPE_SELF       => $query->where('projects.team_lead_id', $actor->id),
             default                      => $query->whereRaw('1 = 0'),
         };

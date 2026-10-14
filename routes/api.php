@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\DeviceTokenController;
 use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\NotificationPreferencesController;
+use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\TaskCommentController;
 use Illuminate\Support\Facades\Route;
 
@@ -332,6 +333,18 @@ Route::prefix('v1')->group(function () {
             Route::post('/test-push', [NotificationPreferencesController::class, 'testPush']);
             Route::match(['post', 'put'], '/{id}/read', [NotificationController::class, 'markRead']);
             Route::delete('/{id}', [NotificationController::class, 'destroy']);
+        });
+
+        // ---- Reports & Management Analytics (Phase 9) ----
+        Route::prefix('reports')->middleware('permission:reports.view')->group(function () {
+            Route::get('/dashboard', [ReportController::class, 'dashboard']);
+            Route::get('/workload', [ReportController::class, 'workload']);
+            Route::get('/task-completion', [ReportController::class, 'taskCompletion']);
+            Route::get('/time-variance', [ReportController::class, 'timeVariance']);
+            Route::get('/overdue-tasks', [ReportController::class, 'overdueTasks']);
+            Route::get('/project-progress', [ReportController::class, 'projectProgress']);
+            Route::get('/team-performance', [ReportController::class, 'teamPerformance']);
+            Route::get('/export', [ReportController::class, 'export']);
         });
 
         // ---- Global Audit Activities (Phase 7 Review item 71) ----

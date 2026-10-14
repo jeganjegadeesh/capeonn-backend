@@ -75,7 +75,11 @@ class NotificationPreferencesController extends Controller
         $res = $notificationService->sendTestPush($actor);
 
         if (! $res['success']) {
-            return $this->error($res['message'], 422, $res['details']);
+            return response()->json([
+                'success' => false,
+                'message' => $res['message'],
+                'data'    => $res['details'],
+            ], 422);
         }
 
         return $this->success($res['details'], $res['message']);
