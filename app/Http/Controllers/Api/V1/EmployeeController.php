@@ -117,6 +117,14 @@ class EmployeeController extends Controller
             $target->tokens()->delete();
             \App\Models\DeviceToken::where('user_id', $target->id)->delete();
             app(\App\Services\ChatProvisioningService::class)->handleUserDeactivated($target);
+            app(\App\Services\AuditService::class)->log(
+                companyId: (int) $actor->company_id,
+                userId: (int) $actor->id,
+                event: 'employee.deactivated',
+                description: "Employee {$target->name} ({$target->email}) was deactivated by {$actor->name}.",
+                severity: 'warning',
+                metadata: ['target_id' => $target->id],
+            );
         }
 
         // System-written history logging
@@ -176,11 +184,19 @@ class EmployeeController extends Controller
             return $this->error('This person still has direct reports. Reassign them first.', 409);
         }
 
-        DB::transaction(function () use ($target) {
+        DB::transaction(function () use ($target, $actor) {
             Department::where('head_user_id', $target->id)->update(['head_user_id' => null]);
             $target->tokens()->delete();
             app(\App\Services\ChatProvisioningService::class)->handleUserDeactivated($target);
             $target->delete(); // soft delete: records they created or worked on stay intact
+            app(\App\Services\AuditService::class)->log(
+                companyId: (int) $actor->company_id,
+                userId: (int) $actor->id,
+                event: 'employee.deleted',
+                description: "Employee {$target->name} ({$target->email}) was archived/deleted by {$actor->name}.",
+                severity: 'warning',
+                metadata: ['target_id' => $target->id, 'employee_code' => $target->employee_code],
+            );
         });
 
         return $this->success(null, 'Employee deleted');

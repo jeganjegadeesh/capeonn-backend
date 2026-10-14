@@ -79,6 +79,7 @@ class NotificationPreferencesController extends Controller
                 'success' => false,
                 'message' => $res['message'],
                 'data'    => $res['details'],
+                'errors'  => $res['details'],
             ], 422);
         }
 

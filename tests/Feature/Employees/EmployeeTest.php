@@ -193,7 +193,7 @@ class EmployeeTest extends OrganizationTestCase
         $this->assertSame($this->sorted($manager, $lead, $emp1, $emp2), $this->idsOf($this->getJson('/api/v1/employees')));
 
         $this->as($lead);
-        $this->assertSame($this->sorted($emp1, $emp2), $this->idsOf($this->getJson('/api/v1/employees')));
+        $this->assertSame($this->sorted($lead, $emp1, $emp2), $this->idsOf($this->getJson('/api/v1/employees')));
 
         $this->as($emp1);
         $this->assertSame($this->sorted($emp1), $this->idsOf($this->getJson('/api/v1/employees')));

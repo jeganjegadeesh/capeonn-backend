@@ -111,7 +111,7 @@ class AccessControlTest extends TestCase
     public function test_team_lead_sees_own_team_only(): void
     {
         $this->assertSame(
-            $this->ids($this->empA1, $this->empA2),
+            $this->ids($this->tlA, $this->empA1, $this->empA2),
             $this->visibleIds($this->tlA, 'employees.view'),
         );
     }
@@ -123,9 +123,9 @@ class AccessControlTest extends TestCase
 
     public function test_manager_team_scope_covers_the_whole_downline(): void
     {
-        // time.view is "team" for managers: TL plus the TL's employees.
+        // time.view is "team" for managers: Manager plus TL plus the TL's employees.
         $this->assertSame(
-            $this->ids($this->tlA, $this->empA1, $this->empA2),
+            $this->ids($this->managerA, $this->tlA, $this->empA1, $this->empA2),
             $this->visibleIds($this->managerA, 'time.view'),
         );
     }

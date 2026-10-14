@@ -13,10 +13,15 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\PersonalAccessToken;
+use App\Services\AuditService;
 
 class AuthController extends Controller
 {
     private const USER_RELATIONS = ['company', 'department', 'designation', 'role.permissions', 'reportsTo'];
+
+    public function __construct(private readonly AuditService $auditService)
+    {
+    }
 
     public function login(LoginRequest $request): JsonResponse
     {
@@ -26,6 +31,17 @@ class AuthController extends Controller
 
         // Same message for "no such user" and "wrong password" so emails can't be probed.
         if (! $user || ! Hash::check($data['password'], $user->password)) {
+            if ($user) {
+                $this->auditService->logSecurity(
+                    companyId: $user->company_id,
+                    userId: $user->id,
+                    event: 'auth.failed_login',
+                    description: "Failed login attempt for {$data['email']}.",
+                    metadata: ['email' => $data['email']],
+                    severity: 'warning',
+                    request: $request
+                );
+            }
             throw ValidationException::withMessages([
                 'email' => ['These credentials do not match our records.'],
             ]);
@@ -36,6 +52,8 @@ class AuthController extends Controller
         }
 
         $user->update(['last_login_at' => now()]);
+
+        $this->auditService->logAuth($user, 'auth.login', "User {$user->name} logged in successfully.", $request);
 
         $minutes   = config('sanctum.expiration');
         $expiresAt = $minutes ? now()->addMinutes((int) $minutes) : null;
@@ -71,6 +89,8 @@ class AuthController extends Controller
         // Revokes only the token used for this request (this device).
         $user->currentAccessToken()->delete();
 
+        $this->auditService->logAuth($user, 'auth.logout', "User {$user->name} logged out.", $request);
+
         return $this->success(null, 'Logged out');
     }
 
@@ -91,6 +111,15 @@ class AuthController extends Controller
         $user->tokens()
             ->when($current instanceof PersonalAccessToken, fn ($q) => $q->where('id', '!=', $current->id))
             ->delete();
+
+        $this->auditService->logSecurity(
+            companyId: $user->company_id,
+            userId: $user->id,
+            event: 'auth.password_changed',
+            description: "User {$user->name} changed password. Other sessions terminated.",
+            severity: 'info',
+            request: $request
+        );
 
         return $this->success(null, 'Password changed successfully');
     }

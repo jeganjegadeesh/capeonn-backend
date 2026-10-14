@@ -70,6 +70,15 @@ class DepartmentController extends Controller
 
         $record->delete();
 
+        app(\App\Services\AuditService::class)->log(
+            companyId: (int) $record->company_id,
+            userId: (int) $request->user()->id,
+            event: 'department.deleted',
+            description: "Department {$record->name} ({$record->code}) was deleted by {$request->user()->name}.",
+            severity: 'warning',
+            metadata: ['department_id' => $record->id, 'department_name' => $record->name],
+        );
+
         return $this->success(null, 'Department deleted');
     }
 

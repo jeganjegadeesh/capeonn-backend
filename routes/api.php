@@ -353,6 +353,12 @@ Route::prefix('v1')->group(function () {
             Route::get('/export', [ProjectController::class, 'exportActivities']);
         });
 
+        // ---- System Audit Logs (Phase 11 Security & Compliance) ----
+        Route::prefix('admin/audit-logs')->group(function () {
+            Route::get('/', [\App\Http\Controllers\Api\V1\AuditLogController::class, 'index']);
+            Route::get('/export', [\App\Http\Controllers\Api\V1\AuditLogController::class, 'export']);
+        });
+
         // ---- Broadcasting Authorization (Pusher / Soketi WebSockets) ----
         Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {
             return \Illuminate\Support\Facades\Broadcast::auth($request);

@@ -27,7 +27,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // should produce a 401 JSON response, not a lookup of route('login').
         $middleware->redirectGuestsTo(fn (Request $request) => null);
 
+        // Trust reverse proxies (Nginx / Cloudflare / Load Balancers) for real client IPs & HTTPS detection
+        $middleware->trustProxies(at: '*');
+
         $middleware->prepend(\App\Http\Middleware\AuthenticateQueryToken::class);
+        $middleware->append(\App\Http\Middleware\SecurityHeadersMiddleware::class);
 
         $middleware->alias([
             'active' => EnsureUserIsActive::class,
