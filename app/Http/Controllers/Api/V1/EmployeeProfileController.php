@@ -60,6 +60,16 @@ class EmployeeProfileController extends Controller
             unset($data['employment_type'], $data['probation_end_date']);
         }
 
+        if ($request->hasFile('avatar')) {
+            $file = $request->file('avatar');
+            if ($target->avatar_path && \Illuminate\Support\Facades\Storage::disk('public')->exists($target->avatar_path)) {
+                \Illuminate\Support\Facades\Storage::disk('public')->delete($target->avatar_path);
+            }
+            $filename = 'avatar_' . $target->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            $data['avatar_path'] = $file->storeAs('avatars', $filename, 'public');
+            unset($data['avatar']);
+        }
+
         $oldDesignationId = $target->designation_id;
         $oldSalary = $target->salary;
 

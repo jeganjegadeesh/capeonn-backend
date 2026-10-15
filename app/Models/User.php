@@ -30,6 +30,7 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'email',
+        'avatar_path',
         'password',
         'phone',
         'company_id',
@@ -258,6 +259,14 @@ class User extends Authenticatable
 
     public function getAvatarUrlAttribute(): ?string
     {
-        return null;
+        if (! $this->avatar_path) {
+            return null;
+        }
+
+        if (str_starts_with($this->avatar_path, 'http://') || str_starts_with($this->avatar_path, 'https://')) {
+            return $this->avatar_path;
+        }
+
+        return url("/api/v1/users/{$this->id}/avatar");
     }
 }

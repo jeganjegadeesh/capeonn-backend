@@ -7,13 +7,16 @@ use App\Http\Requests\Auth\ChangePasswordRequest;
 use App\Http\Requests\Auth\LoginRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Services\AuditService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\PersonalAccessToken;
-use App\Services\AuditService;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class AuthController extends Controller
 {
@@ -122,5 +125,72 @@ class AuthController extends Controller
         );
 
         return $this->success(null, 'Password changed successfully');
+    }
+
+    public function uploadAvatar(Request $request): JsonResponse
+    {
+        $request->validate([
+            'avatar' => ['required', 'file', 'image', 'mimes:jpeg,png,jpg,webp,gif', 'max:5120'],
+        ]);
+
+        $user = $request->user();
+        $file = $request->file('avatar');
+
+        // Delete existing avatar file if stored on public disk
+        if ($user->avatar_path && Storage::disk('public')->exists($user->avatar_path)) {
+            Storage::disk('public')->delete($user->avatar_path);
+        }
+
+        $filename = 'avatar_' . $user->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $path = $file->storeAs('avatars', $filename, 'public');
+
+        $user->update(['avatar_path' => $path]);
+
+        return $this->success(
+            (new UserResource($user->fresh(self::USER_RELATIONS)))->resolve(),
+            'Avatar uploaded successfully'
+        );
+    }
+
+    public function deleteAvatar(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->avatar_path && Storage::disk('public')->exists($user->avatar_path)) {
+            Storage::disk('public')->delete($user->avatar_path);
+        }
+
+        $user->update(['avatar_path' => null]);
+
+        return $this->success(
+            (new UserResource($user->fresh(self::USER_RELATIONS)))->resolve(),
+            'Avatar removed successfully'
+        );
+    }
+
+    public function avatar(int $user): BinaryFileResponse|JsonResponse|RedirectResponse
+    {
+        $target = User::find($user);
+        if (! $target || ! $target->avatar_path) {
+            return response()->json(['message' => 'Avatar not found'], 404);
+        }
+
+        if (str_starts_with($target->avatar_path, 'http://') || str_starts_with($target->avatar_path, 'https://')) {
+            return redirect()->away($target->avatar_path);
+        }
+
+        if (Storage::disk('public')->exists($target->avatar_path)) {
+            return response()->file(Storage::disk('public')->path($target->avatar_path), [
+                'Cache-Control' => 'public, max-age=86400',
+            ]);
+        }
+
+        if (Storage::disk('local')->exists($target->avatar_path)) {
+            return response()->file(Storage::disk('local')->path($target->avatar_path), [
+                'Cache-Control' => 'public, max-age=86400',
+            ]);
+        }
+
+        return response()->json(['message' => 'Avatar file not found'], 404);
     }
 }

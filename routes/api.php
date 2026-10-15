@@ -57,6 +57,7 @@ Route::prefix('v1')->group(function () {
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
     Route::post('/auth/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:password-reset');
     Route::post('/auth/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:password-reset');
+    Route::get('/users/{user}/avatar', [AuthController::class, 'avatar']);
 
     // ---- Authenticated (Bearer token, active account) ----
     Route::middleware(['auth:sanctum', 'active'])->group(function () {
@@ -65,6 +66,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/me', [AuthController::class, 'me']);
             Route::post('/logout', [AuthController::class, 'logout']);
             Route::post('/change-password', [AuthController::class, 'changePassword']);
+            Route::post('/avatar', [AuthController::class, 'uploadAvatar'])->middleware('throttle:30,1');
+            Route::delete('/avatar', [AuthController::class, 'deleteAvatar']);
         });
 
         Route::post('/uploads', [UploadController::class, 'store'])->middleware('throttle:30,1');
@@ -130,6 +133,7 @@ Route::prefix('v1')->group(function () {
 
             Route::middleware('permission:attendance.view')->group(function () {
                 Route::get('/records', [AttendanceController::class, 'records']);
+                Route::get('/daily-status', [AttendanceController::class, 'dailyStatus']);
             });
 
             Route::middleware('permission:attendance.manage')->group(function () {

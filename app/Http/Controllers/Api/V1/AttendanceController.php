@@ -221,7 +221,7 @@ class AttendanceController extends Controller
         $query = $this->access->constrainByUserId(
             Attendance::query()
                 ->whereHas('user', fn ($u) => $u->where('is_attendance_applicable', true))
-                ->with(['user:id,name,email,employee_code,department_id', 'user.department:id,name']),
+                ->with(['user:id,name,email,employee_code,department_id,avatar_path', 'user.department:id,name']),
             $actor,
             'attendance.view'
         );
@@ -249,6 +249,99 @@ class AttendanceController extends Controller
         return $this->paginated($paginator, $items);
     }
 
+    /** GET /attendance/daily-status?date=YYYY-MM-DD */
+    public function dailyStatus(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        $date = $request->query('date', now()->toDateString());
+
+        // Constrain users by actor's attendance.view permission scope
+        $usersQuery = $this->access->constrainUsers(
+            User::query()
+                ->where('is_attendance_applicable', true)
+                ->with(['department:id,name', 'designation:id,name']),
+            $actor,
+            'attendance.view'
+        );
+
+        if ($request->filled('department_id')) {
+            $usersQuery->where('department_id', (int) $request->query('department_id'));
+        }
+
+        $users = $usersQuery->orderBy('name')->get();
+        $userIds = $users->pluck('id')->all();
+
+        $attendances = Attendance::whereIn('user_id', $userIds)
+            ->whereDate('date', $date)
+            ->get()
+            ->keyBy('user_id');
+
+        $items = $users->map(function (User $u) use ($attendances, $date) {
+            $att = $attendances->get($u->id);
+
+            $status = 'absent';
+            $isClockedIn = false;
+            $isClockedOut = false;
+            $clockInAt = null;
+            $clockOutAt = null;
+            $isFlagged = false;
+            $flaggedReason = null;
+            $geofenceStatus = 'unknown';
+            $totalMinutes = 0;
+            $locationName = null;
+            $attendanceId = null;
+
+            if ($att) {
+                $status = $att->status;
+                $isClockedIn = $att->clock_in_at !== null && $att->clock_out_at === null;
+                $isClockedOut = $att->clock_out_at !== null;
+                $clockInAt = $att->clock_in_at?->toIso8601String();
+                $clockOutAt = $att->clock_out_at?->toIso8601String();
+                $isFlagged = (bool) $att->is_flagged;
+                $flaggedReason = $att->flagged_reason;
+                $geofenceStatus = $att->geofence_status;
+                $totalMinutes = (int) $att->total_minutes;
+                $locationName = $att->clock_in_location_name;
+                $attendanceId = $att->id;
+            }
+
+            return [
+                'user_id'                => $u->id,
+                'user_name'              => $u->name,
+                'email'                  => $u->email,
+                'avatar_url'             => $u->avatar_url,
+                'avatar_path'            => $u->avatar_path,
+                'employee_code'          => $u->employee_code,
+                'department_name'        => $u->department?->name,
+                'designation_name'       => $u->designation?->name,
+                'date'                   => $date,
+                'attendance_id'          => $attendanceId,
+                'status'                 => $status, // present, late, half_day, absent
+                'is_clocked_in'          => $isClockedIn,
+                'is_clocked_out'         => $isClockedOut,
+                'clock_in_at'            => $clockInAt,
+                'clock_out_at'           => $clockOutAt,
+                'clock_in_location_name' => $locationName,
+                'is_flagged'             => $isFlagged,
+                'flagged_reason'         => $flaggedReason,
+                'geofence_status'        => $geofenceStatus,
+                'total_minutes'          => $totalMinutes,
+                'total_hours_formatted'  => sprintf('%dh %02dm', intdiv($totalMinutes, 60), $totalMinutes % 60),
+            ];
+        });
+
+        return $this->success([
+            'date'              => $date,
+            'total_users'       => $users->count(),
+            'present_count'     => $items->whereIn('status', ['present', 'late', 'half_day'])->count(),
+            'late_count'        => $items->where('status', 'late')->count(),
+            'clocked_in_count'  => $items->where('is_clocked_in', true)->count(),
+            'absent_count'      => $items->where('status', 'absent')->count(),
+            'flagged_count'     => $items->where('is_flagged', true)->count(),
+            'users'             => $items->values()->all(),
+        ]);
+    }
+
     /** GET /attendance/summary?year=&month= */
     public function summary(Request $request): JsonResponse
     {
@@ -256,15 +349,52 @@ class AttendanceController extends Controller
         $year = (int) $request->query('year', now()->year);
         $month = (int) $request->query('month', now()->month);
 
-        if (! $user->is_attendance_applicable) {
+        if (! $user->is_attendance_applicable || $request->boolean('organization')) {
+            $companyId = $user->company_id;
+            $eligibleUsers = User::where('company_id', $companyId)
+                ->where('is_attendance_applicable', true)
+                ->whereNull('deleted_at')
+                ->get();
+
+            $eligibleCount = $eligibleUsers->count();
+            $eligibleIds = $eligibleUsers->pluck('id')->all();
+
+            $records = Attendance::whereIn('user_id', $eligibleIds)
+                ->whereYear('date', $year)
+                ->whereMonth('date', $month)
+                ->get();
+
+            $presentCount = $records->where('status', 'present')->count();
+            $lateCount    = $records->where('status', 'late')->count();
+            $halfDayCount = $records->where('status', 'half_day')->count();
+            $totalMinutes = $records->sum('total_minutes');
+
+            $today = now()->toDateString();
+            $todayRecords = Attendance::whereIn('user_id', $eligibleIds)
+                ->whereDate('date', $today)
+                ->get();
+
+            $todayClockedIn = $todayRecords->whereNotNull('clock_in_at')->whereNull('clock_out_at')->count();
+            $todayClockedOut = $todayRecords->whereNotNull('clock_out_at')->count();
+            $todayLate = $todayRecords->where('status', 'late')->count();
+            $todayFlagged = $todayRecords->where('is_flagged', true)->count();
+            $todayAbsent = max(0, $eligibleCount - $todayRecords->count());
+
             return $this->success([
-                'year'          => $year,
-                'month'         => $month,
-                'days_present'  => 0,
-                'days_late'     => 0,
-                'days_half_day' => 0,
-                'total_hours'   => 0.0,
-                'total_records' => 0,
+                'year'                    => $year,
+                'month'                   => $month,
+                'days_present'            => $presentCount,
+                'days_late'               => $lateCount,
+                'days_half_day'           => $halfDayCount,
+                'total_hours'             => round($totalMinutes / 60, 1),
+                'total_records'           => $records->count(),
+                'eligible_users_count'    => $eligibleCount,
+                'today_clocked_in_count'  => $todayClockedIn,
+                'today_clocked_out_count' => $todayClockedOut,
+                'today_late_count'        => $todayLate,
+                'today_flagged_count'     => $todayFlagged,
+                'today_absent_count'      => $todayAbsent,
+                'is_organization'         => true,
             ]);
         }
 
@@ -286,6 +416,7 @@ class AttendanceController extends Controller
             'days_half_day' => $halfDayCount,
             'total_hours'   => round($totalMinutes / 60, 1),
             'total_records' => $records->count(),
+            'is_organization' => false,
         ]);
     }
 
@@ -295,6 +426,8 @@ class AttendanceController extends Controller
             'id'                     => $a->id,
             'user_id'                => $a->user_id,
             'user_name'              => $a->user?->name,
+            'avatar_url'             => $a->user?->avatar_url,
+            'avatar_path'            => $a->user?->avatar_path,
             'employee_code'          => $a->user?->employee_code,
             'department_name'        => $a->user?->department?->name,
             'date'                   => $a->date->toDateString(),

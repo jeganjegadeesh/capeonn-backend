@@ -351,6 +351,249 @@ class DemoOrganizationSeeder extends Seeder
                 'is_manual'        => false,
             ]);
         }
+
+        // Demo Attendance Records for Clock-In Eligible Employees
+        $today = now();
+        $yesterday = now()->subDay();
+        $twoDaysAgo = now()->subDays(2);
+
+        $eligibleUsers = User::where('company_id', $company->id)
+            ->where('is_attendance_applicable', true)
+            ->get()
+            ->keyBy('email');
+
+        if ($eligibleUsers->isNotEmpty()) {
+            // Two days ago records
+            if (isset($eligibleUsers['manager@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['manager@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $twoDaysAgo->copy()->setTime(9, 10),
+                    'clock_out_at'           => $twoDaysAgo->copy()->setTime(18, 5),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 535,
+                ]);
+            }
+            if (isset($eligibleUsers['tl@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['tl@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $twoDaysAgo->copy()->setTime(9, 50),
+                    'clock_out_at'           => $twoDaysAgo->copy()->setTime(18, 30),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'late',
+                    'total_minutes'          => 520,
+                ]);
+            }
+            if (isset($eligibleUsers['employee1@capeonn.test'])) {
+                $att = \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee1@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $twoDaysAgo->copy()->setTime(9, 15),
+                    'clock_out_at'           => $twoDaysAgo->copy()->setTime(13, 0),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'half_day',
+                    'total_minutes'          => 225,
+                    'notes'                  => 'Left early for client site visit',
+                ]);
+
+                \App\Models\AttendanceRegularization::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee1@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'          => $company->id,
+                    'attendance_id'       => $att->id,
+                    'requested_clock_in'  => $twoDaysAgo->copy()->setTime(9, 15),
+                    'requested_clock_out' => $twoDaysAgo->copy()->setTime(18, 0),
+                    'reason'              => 'Was at client office from 1:30 PM to 6:00 PM for project deployment discussion.',
+                    'status'              => 'pending',
+                ]);
+            }
+            if (isset($eligibleUsers['employee2@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee2@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $twoDaysAgo->copy()->setTime(9, 8),
+                    'clock_out_at'           => $twoDaysAgo->copy()->setTime(18, 0),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 532,
+                ]);
+            }
+            if (isset($eligibleUsers['hr@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['hr@capeonn.test']->id,
+                    'date'    => $twoDaysAgo->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $twoDaysAgo->copy()->setTime(8, 55),
+                    'clock_out_at'           => $twoDaysAgo->copy()->setTime(17, 30),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 515,
+                ]);
+            }
+
+            // Yesterday records
+            if (isset($eligibleUsers['manager@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['manager@capeonn.test']->id,
+                    'date'    => $yesterday->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $yesterday->copy()->setTime(9, 5),
+                    'clock_out_at'           => $yesterday->copy()->setTime(18, 0),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 535,
+                ]);
+            }
+            if (isset($eligibleUsers['tl@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['tl@capeonn.test']->id,
+                    'date'    => $yesterday->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $yesterday->copy()->setTime(9, 18),
+                    'clock_out_at'           => $yesterday->copy()->setTime(18, 15),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 537,
+                ]);
+            }
+            if (isset($eligibleUsers['employee1@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee1@capeonn.test']->id,
+                    'date'    => $yesterday->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $yesterday->copy()->setTime(9, 25),
+                    'clock_out_at'           => $yesterday->copy()->setTime(18, 10),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 525,
+                ]);
+            }
+            if (isset($eligibleUsers['employee2@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee2@capeonn.test']->id,
+                    'date'    => $yesterday->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $yesterday->copy()->setTime(9, 45),
+                    'clock_out_at'           => $yesterday->copy()->setTime(18, 30),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'late',
+                    'total_minutes'          => 525,
+                ]);
+            }
+            if (isset($eligibleUsers['hr@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['hr@capeonn.test']->id,
+                    'date'    => $yesterday->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $yesterday->copy()->setTime(9, 0),
+                    'clock_out_at'           => $yesterday->copy()->setTime(17, 45),
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 525,
+                ]);
+            }
+
+            // Today records (live status)
+            if (isset($eligibleUsers['manager@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['manager@capeonn.test']->id,
+                    'date'    => $today->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $today->copy()->setTime(9, 12),
+                    'clock_out_at'           => null,
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 0,
+                ]);
+            }
+            if (isset($eligibleUsers['tl@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['tl@capeonn.test']->id,
+                    'date'    => $today->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $today->copy()->setTime(9, 20),
+                    'clock_out_at'           => null,
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 0,
+                ]);
+            }
+            if (isset($eligibleUsers['employee1@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['employee1@capeonn.test']->id,
+                    'date'    => $today->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $today->copy()->setTime(9, 48),
+                    'clock_out_at'           => null,
+                    'clock_in_location_name' => 'Indiranagar Metro (Remote)',
+                    'geofence_status'        => 'outside',
+                    'is_flagged'             => true,
+                    'flagged_reason'         => 'Clocked in outside geofence (2100m from Capeonn HQ)',
+                    'status'                 => 'late',
+                    'total_minutes'          => 0,
+                    'notes'                  => 'Traffic congestion on Old Airport Road',
+                ]);
+            }
+            if (isset($eligibleUsers['hr@capeonn.test'])) {
+                \App\Models\Attendance::firstOrCreate([
+                    'user_id' => $eligibleUsers['hr@capeonn.test']->id,
+                    'date'    => $today->toDateString(),
+                ], [
+                    'company_id'             => $company->id,
+                    'clock_in_at'            => $today->copy()->setTime(8, 52),
+                    'clock_out_at'           => null,
+                    'clock_in_location_name' => 'Capeonn HQ - Tech Park',
+                    'geofence_status'        => 'inside',
+                    'is_flagged'             => false,
+                    'status'                 => 'present',
+                    'total_minutes'          => 0,
+                ]);
+            }
+        }
     }
 
     private function user(Company $company, string $name, string $email, int $number, string $roleSlug,

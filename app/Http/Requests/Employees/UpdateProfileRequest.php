@@ -15,6 +15,8 @@ class UpdateProfileRequest extends FormRequest
     {
         return [
             'dob'                     => ['nullable', 'date'],
+            'avatar'                  => ['nullable', 'file', 'image', 'mimes:jpeg,png,jpg,webp,gif', 'max:5120'],
+            'avatar_path'             => ['nullable', 'string', 'max:2048'],
             'gender'                  => ['nullable', 'string', 'in:male,female,other,prefer_not_to_say'],
             'address'                 => ['nullable', 'string', 'max:1000'],
             'emergency_contact_name'  => ['nullable', 'string', 'max:100'],
