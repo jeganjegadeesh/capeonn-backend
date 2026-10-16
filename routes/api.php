@@ -29,7 +29,11 @@ use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\NotificationPreferencesController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\TaskCommentController;
+use App\Http\Controllers\Api\V1\HealthController;
 use Illuminate\Support\Facades\Route;
+
+// Top-level diagnostic health check for load balancers
+Route::get('/health', [HealthController::class, 'check']);
 
 // Ids in URLs are always numeric; anything else is a 404.
 Route::pattern('department', '[0-9]+');
@@ -53,6 +57,7 @@ Route::prefix('v1')->group(function () {
     Route::get('/ping', function () {
         return response()->json(['success' => true, 'message' => 'pong']);
     });
+    Route::get('/health', [HealthController::class, 'check']);
 
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
     Route::post('/auth/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:password-reset');

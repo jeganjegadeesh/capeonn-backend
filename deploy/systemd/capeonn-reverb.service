@@ -1,0 +1,27 @@
+# ==============================================================================
+# Capeonn Real-Time WebSocket Server (Laravel Reverb Daemon)
+# Systemd Service Unit Configuration
+# ==============================================================================
+
+[Unit]
+Description=Capeonn Real-Time WebSocket Daemon (Laravel Reverb)
+After=network.target mysql.service redis.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/capeonn/capeonn-backend
+ExecStart=/usr/bin/php /var/www/capeonn/capeonn-backend/artisan reverb:start --host=127.0.0.1 --port=8080 --no-interaction
+Restart=always
+RestartSec=5s
+StandardOutput=append:/var/log/capeonn/reverb.log
+StandardError=append:/var/log/capeonn/reverb-error.log
+
+# Resource Limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
