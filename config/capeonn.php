@@ -17,4 +17,13 @@ return [
         // No default on purpose: outside local, the seeder refuses to run without one.
         'password' => env('CAPEONN_ADMIN_PASSWORD'),
     ],
+
+    // Default primary office location for geofence attendance tracking.
+    'office' => [
+        'name'          => env('CAPEONN_OFFICE_NAME', 'Headquarters'),
+        'address'       => env('CAPEONN_OFFICE_ADDRESS', 'Main Office Campus'),
+        'latitude'      => (float) env('CAPEONN_OFFICE_LATITUDE', 12.9716),
+        'longitude'     => (float) env('CAPEONN_OFFICE_LONGITUDE', 77.5946),
+        'radius_meters' => (int) env('CAPEONN_OFFICE_RADIUS', 500),
+    ],
 ];

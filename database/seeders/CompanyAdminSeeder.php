@@ -16,10 +16,10 @@ class CompanyAdminSeeder extends Seeder
         $password = config('capeonn.admin.password');
 
         if (! $password) {
-            if (! app()->environment('local')) {
+            if (! app()->environment(['local', 'testing'])) {
                 throw new RuntimeException('Set CAPEONN_ADMIN_PASSWORD in .env before seeding a non-local environment.');
             }
-            $password = 'Password@123'; // local development only
+            $password = 'Password@123'; // local development / testing only
         }
 
         $company = Company::firstOrCreate(
